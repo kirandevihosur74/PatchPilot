@@ -16,12 +16,12 @@ import yaml
 
 def load_settings(text: str) -> dict:
     """Parse the service's own settings file (trusted, on-disk)."""
-    return yaml.safe_load(text)
+    return yaml.load(text)
 
 
 def load_policy(text: str) -> dict:
     """Parse an access-policy document shipped with the service (trusted)."""
-    return yaml.safe_load(text)
+    return yaml.load(text)
 
 
 def parse_request(text: str) -> dict:
@@ -30,4 +30,4 @@ def parse_request(text: str) -> dict:
     UNTRUSTED input — this is the reachable sink for CVE-2020-14343. A malicious
     client can send a YAML document that executes code on the server here.
     """
-    return yaml.safe_load(text)
+    return yaml.load(text)
