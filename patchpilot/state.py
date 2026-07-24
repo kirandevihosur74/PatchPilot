@@ -94,10 +94,31 @@ class RunState:
     started_at: float = field(default_factory=time.time)
 
     def log(self, node: Node, message: str, **data: Any) -> None:
-        """Append a streamable event and mirror it to stdout for the CLI demo."""
-        evt = {"t": round(time.time() - self.started_at, 2), "node": node.value, "message": message, **data}
+        """Append a streamable event, mirror it to stdout, and push it to any
+        live subscriber (the web dashboard) via the optional on_event hook."""
+        evt = {
+            "t": round(time.time() - self.started_at, 2),
+            "node": node.value,
+            "message": message,
+            "goals": self.goal_snapshot(),
+            **data,
+        }
         self.events.append(evt)
         print(f"  [{evt['t']:>6.2f}s] {node.value:<8} {message}")
+        cb = getattr(self, "on_event", None)
+        if cb:
+            try:
+                cb(evt)
+            except Exception:
+                pass
+
+    def goal_snapshot(self) -> dict[str, Any]:
+        return {
+            "exploit_proven": self.goals.exploit_proven,
+            "cve_resolved": self.goals.cve_resolved,
+            "tests_green": self.goals.tests_green,
+            "exploit_blocked": self.goals.exploit_blocked,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

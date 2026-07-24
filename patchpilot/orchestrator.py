@@ -20,8 +20,9 @@ NON_FIXABLE = {"exploit.py"}
 
 
 class Orchestrator:
-    def __init__(self, config: Config | None = None) -> None:
+    def __init__(self, config: Config | None = None, on_event=None) -> None:
         self.config = config or load_config()
+        self.on_event = on_event  # live subscriber (web dashboard); called per node
         self.llm = LLM(self.config)
         self.tracer = Tracer(self.config)
 
@@ -34,6 +35,8 @@ class Orchestrator:
             max_iterations=cfg.max_fix_iterations,
             patched_version=cfg.patched_version,
         )
+        if self.on_event:
+            state.on_event = self.on_event
         print(cfg.summary())
         print(f"\n=== PatchPilot run {state.run_id} on {cfg.target_path} ===\n")
 

@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PatchPilot — prove it's exploitable, then prove it's dead</title>
+<style>
+:root{
+  --void:#08080a; --charcoal:#0d0d12; --graphite:#17171c; --slate:#25252d;
+  --iron:#31313a; --ash:#62626f; --fog:#8b8e9c; --pearl:#aeaac0; --chalk:#dad7de;
+  --lavender:#ab8ff1; --iris:#8960f0;
+  --aurora:radial-gradient(circle, rgb(142,108,228), rgb(114,79,201));
+  --sys:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,system-ui,sans-serif;
+  --max:1200px; --gap:96px;
+  --sh-sm:rgba(0,0,0,.25) 0 1px 4px 0; --sh-cap:#31313a 0 -1px 0 0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--void); color:var(--pearl); font-family:var(--sys);
+  font-size:16px; line-height:1.4; letter-spacing:-.16px;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
+a{color:inherit}
+.display{font-weight:500;line-height:.99;letter-spacing:-.045em}
+.mono{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+
+/* nav */
+nav{position:relative;z-index:5}
+.navrow{display:flex;align-items:center;justify-content:space-between;padding:20px 0}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;color:var(--chalk);letter-spacing:-.02em}
+.brand .glyph{width:16px;height:16px;border-radius:3px;background:var(--aurora);box-shadow:0 0 18px rgba(171,143,241,.6)}
+.navlinks{display:flex;align-items:center;gap:19px;font-size:14px}
+.navlinks a{color:var(--pearl);text-decoration:none}
+.navlinks a.ghost{border:1px solid var(--fog);border-radius:3px;padding:6px 12px}
+.btn{font-family:var(--sys);font-size:14px;font-weight:500;border-radius:3px;padding:8px 14px;
+  border:none;cursor:pointer;background:var(--chalk);color:var(--void);box-shadow:var(--sh-cap);letter-spacing:-.01em}
+.btn:hover{background:#fff}
+.btn.ghost{background:transparent;color:var(--pearl);border:1px solid var(--fog);box-shadow:none}
+.btn.ghost:hover{border-color:var(--pearl);background:transparent}
+.btn:disabled{opacity:.45;cursor:default}
+.btn:focus-visible,a:focus-visible{outline:2px solid var(--lavender);outline-offset:2px}
+
+/* hero */
+.hero{position:relative;text-align:center;padding:118px 0 96px;overflow:hidden}
+.hero .aurora{position:absolute;left:50%;bottom:-38%;transform:translateX(-50%);
+  width:min(1100px,140vw);height:820px;background:var(--aurora);
+  filter:blur(30px);opacity:.42;border-radius:50%;z-index:0;pointer-events:none;
+  animation:breathe 9s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.34;transform:translateX(-50%) scale(1)}50%{opacity:.5;transform:translateX(-50%) scale(1.05)}}
+.hero>*{position:relative;z-index:1}
+.pill{display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(174,170,192,.4);
+  background:rgba(8,8,10,.5);border-radius:3px;padding:5px 10px;font-size:13px;color:var(--pearl);letter-spacing:-.13px}
+.pill .dot{width:6px;height:6px;border-radius:50%;background:var(--lavender);box-shadow:0 0 10px var(--lavender)}
+h1{font-size:clamp(40px,7vw,64px);color:var(--chalk);margin:24px auto 20px;max-width:14ch}
+.sub{font-size:18px;color:var(--fog);max-width:56ch;margin:0 auto 30px;line-height:1.4}
+.sub b{color:var(--pearl);font-weight:500}
+.herobtns{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+
+/* sections */
+section.band{padding:var(--gap) 0}
+.eyebrow{font-size:13px;letter-spacing:.02em;color:var(--ash);text-transform:uppercase;margin-bottom:14px}
+h2{font-size:clamp(30px,4.4vw,48px);color:var(--chalk);letter-spacing:-.04em;font-weight:500;line-height:1}
+.lead{color:var(--fog);font-size:18px;max-width:60ch;margin-top:18px}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:40px}
+.stat{background:var(--graphite);border:1px solid rgba(174,170,192,.18);border-radius:10px;padding:30px}
+.stat .n{font-size:48px;color:var(--chalk);letter-spacing:-.04em;font-weight:500;line-height:1}
+.stat .n .u{font-size:20px;color:var(--fog);margin-left:6px;letter-spacing:-.02em}
+.stat p{color:var(--fog);margin-top:12px;font-size:15px}
+
+/* pipeline cards */
+.pipe{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:40px}
+.pcard{background:var(--graphite);border:1px solid rgba(174,170,192,.18);border-radius:10px;padding:30px;position:relative}
+.pcard .step{font-size:13px;color:var(--ash);letter-spacing:.02em}
+.pcard .verb{font-size:26px;color:var(--chalk);letter-spacing:-.03em;font-weight:500;margin:10px 0 4px;line-height:1}
+.pcard .tool{font-size:13px;color:var(--lavender);letter-spacing:-.01em;margin-bottom:14px}
+.pcard p{font-size:14px;color:var(--fog);line-height:1.45}
+
+/* loop chips */
+.loop{display:flex;flex-wrap:wrap;gap:8px;margin-top:40px}
+.chip{font-size:13px;color:var(--pearl);border:1px solid var(--iron);border-radius:3px;padding:6px 10px;background:var(--charcoal)}
+.chip i{color:var(--ash);font-style:normal;margin-right:8px}
+
+/* console */
+.console{background:var(--charcoal);border:1px solid rgba(174,170,192,.18);border-radius:10px;overflow:hidden}
+.chead{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:18px 24px;border-bottom:1px solid var(--iron);flex-wrap:wrap}
+.chead .t{font-size:14px;color:var(--fog);display:flex;align-items:center;gap:10px}
+.chead .live{width:8px;height:8px;border-radius:50%;background:var(--iron)}
+.chead .live.on{background:var(--lavender);box-shadow:0 0 10px var(--lavender);animation:pulse 1.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.cbtns{display:flex;gap:10px;align-items:center}
+.goals{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--iron)}
+.goal{background:var(--charcoal);padding:20px 24px}
+.goal .gl{font-size:12px;color:var(--ash);letter-spacing:.02em;text-transform:uppercase}
+.goal .gv{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:15px;color:var(--ash);letter-spacing:-.01em}
+.goal .gd{width:9px;height:9px;border-radius:50%;background:var(--iron);flex:none;transition:.3s}
+.goal.done .gv{color:var(--chalk)}
+.goal.done .gd{background:var(--lavender);box-shadow:0 0 10px var(--lavender)}
+.goal.fail .gv{color:var(--fog)}
+.goal.fail .gd{background:var(--ash)}
+
+.timeline{padding:8px 0;max-height:340px;overflow-y:auto;font-size:14px}
+.row{display:grid;grid-template-columns:64px 84px 1fr;gap:14px;align-items:baseline;
+  padding:9px 24px;animation:slidein .35s ease}
+@keyframes slidein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.row .ts{color:var(--ash);font-size:13px}
+.row .nd{font-size:12px;color:var(--pearl);border:1px solid var(--iron);border-radius:3px;
+  padding:2px 7px;text-align:center;letter-spacing:.01em}
+.row .msg{color:var(--pearl);line-height:1.4}
+.row.hot .nd{border-color:var(--lavender);color:var(--lavender)}
+.row.hot .msg b{color:var(--lavender)}
+.row.cool .msg b{color:var(--chalk)}
+.row .msg b{font-weight:500}
+.cfoot{padding:18px 24px;border-top:1px solid var(--iron);display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-height:64px}
+.cfoot .hint{color:var(--ash);font-size:14px}
+.hidden{display:none}
+
+footer{padding:60px 0;color:var(--ash);font-size:13px;border-top:1px solid var(--iron);text-align:center}
+
+@media (max-width:860px){
+  .stats,.pipe{grid-template-columns:1fr 1fr}
+  .goals{grid-template-columns:1fr 1fr}
+  .row{grid-template-columns:52px 72px 1fr;gap:10px}
+}
+@media (max-width:560px){.stats,.pipe,.goals{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<nav><div class="wrap navrow">
+  <div class="brand"><span class="glyph"></span>PatchPilot</div>
+  <div class="navlinks">
+    <a href="#how">How it works</a>
+    <a id="ghlink" href="#" target="_blank" rel="noopener">GitHub</a>
+    <a href="#run" class="btn">Launch App</a>
+  </div>
+</div></nav>
+
+<header class="hero">
+  <div class="aurora"></div>
+  <div class="wrap">
+    <span class="pill"><span class="dot"></span>Exploit-first dependency patching</span>
+    <h1 class="display">Prove it's exploitable. Then prove it's dead.</h1>
+    <p class="sub">Every scanner tells you that you <b>have</b> a vulnerable version. None tell you
+      whether you're <b>actually exploitable</b>. PatchPilot writes the exploit, patches the bug,
+      repairs what the upgrade breaks, and re-runs the exploit to prove it's gone.</p>
+    <div class="herobtns">
+      <a href="#run" class="btn">Launch App</a>
+      <a href="#how" class="btn ghost">See how it works</a>
+    </div>
+  </div>
+</header>
+
+<section class="band"><div class="wrap">
+  <div class="eyebrow">The problem</div>
+  <h2 class="display">Security backlogs are 90% noise.</h2>
+  <p class="lead">Scanners match version strings — "you have PyYAML 5.3.1, it's in the vulnerable
+    range." They can't tell whether the vulnerable path is reachable in your code, so teams drown
+    in alerts and patch nothing while real CVEs sit for months.</p>
+  <div class="stats">
+    <div class="stat"><div class="n mono">252<span class="u">days</span></div><p>Industry median time-to-remediate a known vulnerability.</p></div>
+    <div class="stat"><div class="n mono">~90<span class="u">%</span></div><p>Of alerts are unreachable noise — flagged, never exploitable.</p></div>
+    <div class="stat"><div class="n mono">0</div><p>Scanners that prove reachability by actually running the exploit.</p></div>
+  </div>
+</div></section>
+
+<section class="band" id="how"><div class="wrap">
+  <div class="eyebrow">How it works</div>
+  <h2 class="display">Isolate. Generate. Evaluate. Review.</h2>
+  <p class="lead">One loop, wired end to end across four systems — each one load-bearing, none decorative.</p>
+  <div class="pipe">
+    <div class="pcard"><div class="step">01 · Isolate</div><div class="verb">Daytona</div>
+      <div class="tool">Sandboxes</div>
+      <p>Every exploit and patch attempt runs in a throwaway sandbox. Running a live RCE on stage is safe because it never touches a real machine.</p></div>
+    <div class="pcard"><div class="step">02 · Generate</div><div class="verb">Fireworks</div>
+      <div class="tool">Two-model loop</div>
+      <p>A fast model triages the breakage; a coder model writes the fix — self-correcting until the suite is green.</p></div>
+    <div class="pcard"><div class="step">03 · Evaluate</div><div class="verb">Braintrust</div>
+      <div class="tool">Traces + eval</div>
+      <p>Every step is traced and scored. A security eval fails any fix that weakens the code to pass the tests.</p></div>
+    <div class="pcard"><div class="step">04 · Review</div><div class="verb">CodeRabbit</div>
+      <div class="tool">Independent gate</div>
+      <p>An independent AI reviews the patch PR. Merge gates on tests and review both. The agent that writes the patch never approves it.</p></div>
+  </div>
+  <div class="loop">
+    <span class="chip"><i>01</i>detect</span><span class="chip"><i>02</i>prove</span>
+    <span class="chip"><i>03</i>upgrade</span><span class="chip"><i>04</i>observe</span>
+    <span class="chip"><i>05</i>fix</span><span class="chip"><i>06</i>verify</span>
+    <span class="chip"><i>07</i>guard</span><span class="chip"><i>08</i>reprove</span>
+    <span class="chip"><i>09</i>submit</span><span class="chip"><i>10</i>gate</span>
+  </div>
+</div></section>
+
+<section class="band" id="run"><div class="wrap">
+  <div class="eyebrow">Live</div>
+  <h2 class="display">Watch it run.</h2>
+  <p class="lead">One click on a real vulnerable package — PyYAML 5.3.1, CVE-2020-14343. The exploit
+    runs, the patch lands, the exploit dies, and a real pull request opens for review.</p>
+
+  <div class="console" style="margin-top:40px">
+    <div class="chead">
+      <div class="t"><span class="live" id="live"></span><span id="status">Idle — press Run.</span></div>
+      <div class="cbtns">
+        <button class="btn" id="runlive">Run live</button>
+        <button class="btn ghost" id="rundemo">Replay demo</button>
+      </div>
+    </div>
+    <div class="goals" id="goals">
+      <div class="goal" data-k="exploit_proven"><div class="gl">Exploitable</div><div class="gv"><span class="gd"></span>proven</div></div>
+      <div class="goal" data-k="cve_resolved"><div class="gl">CVE</div><div class="gv"><span class="gd"></span>resolved</div></div>
+      <div class="goal" data-k="tests_green"><div class="gl">Tests</div><div class="gv"><span class="gd"></span>green</div></div>
+      <div class="goal" data-k="exploit_blocked"><div class="gl">Exploit</div><div class="gv"><span class="gd"></span>blocked</div></div>
+    </div>
+    <div class="timeline" id="timeline"></div>
+    <div class="cfoot" id="cfoot"><span class="hint">The loop streams here as it runs.</span></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap">PatchPilot · isolate (Daytona) → generate (Fireworks) → evaluate (Braintrust) → review (CodeRabbit)</div></footer>
+
+<script>
+const NODE_LABEL={detect:"detect",prove:"prove",upgrade:"upgrade",observe:"observe",fix:"fix",
+  verify:"verify",guard:"guard",reprove:"reprove",submit:"submit",gate:"gate",done:"done",error:"error"};
+let repoUrl="";
+fetch("/meta").then(r=>r.json()).then(m=>{repoUrl=m.repo_url||"";if(repoUrl)document.getElementById("ghlink").href=repoUrl;})
+  .catch(()=>{});
+
+const timeline=document.getElementById("timeline");
+const statusEl=document.getElementById("status");
+const liveEl=document.getElementById("live");
+const cfoot=document.getElementById("cfoot");
+const btnLive=document.getElementById("runlive");
+const btnDemo=document.getElementById("rundemo");
+let t0=0, es=null, running=false;
+
+function emphasize(msg){
+  return msg
+    .replace(/(ACCEPTED[^.,]*)/g,"<b>$1</b>")
+    .replace(/(BLOCKED[^.,]*)/g,"<b>$1</b>")
+    .replace(/(RCE)/g,"<b>$1</b>");
+}
+function addRow(evt){
+  const el=document.createElement("div");
+  const hot=/ACCEPTED|RCE/.test(evt.message);
+  const cool=/BLOCKED|dead|green|preserved/.test(evt.message);
+  el.className="row"+(hot?" hot":cool?" cool":"");
+  const ts=((evt.t!=null?evt.t:(Date.now()-t0)/1000)).toFixed(1)+"s";
+  el.innerHTML=`<span class="ts mono">${ts}</span>`
+    +`<span class="nd">${NODE_LABEL[evt.node]||evt.node}</span>`
+    +`<span class="msg">${emphasize(escapeHtml(evt.message))}</span>`;
+  timeline.appendChild(el);
+  timeline.scrollTop=timeline.scrollHeight;
+}
+function escapeHtml(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function updateGoals(g){
+  if(!g)return;
+  document.querySelectorAll(".goal").forEach(el=>{
+    const v=g[el.dataset.k];
+    el.classList.toggle("done",v===true);
+    el.classList.toggle("fail",v===false);
+  });
+}
+function finish(evt){
+  running=false;liveEl.classList.remove("on");
+  btnLive.disabled=false;btnDemo.disabled=false;
+  const escalated=evt&&evt.escalated;
+  statusEl.textContent=escalated?"Gate held — CodeRabbit requested changes.":"Done — proven exploitable, then proven dead.";
+  const url=(evt&&evt.pr_url)||repoUrl;
+  cfoot.innerHTML="";
+  if(url){
+    const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";
+    a.className="btn";a.textContent=(evt&&evt.pr_url)?"View the PR + CodeRabbit review":"Open the repo on GitHub";
+    cfoot.appendChild(a);
+  }
+  const note=document.createElement("span");note.className="hint";
+  note.textContent=escalated?" The independent reviewer blocked an incomplete patch — exactly the point.":" ";
+  cfoot.appendChild(note);
+}
+function launch(mode){
+  if(running)return;
+  running=true;t0=Date.now();
+  timeline.innerHTML="";cfoot.innerHTML='<span class="hint">Starting…</span>';
+  updateGoals({});
+  document.querySelectorAll(".goal").forEach(el=>el.classList.remove("done","fail"));
+  btnLive.disabled=true;btnDemo.disabled=true;liveEl.classList.add("on");
+  statusEl.textContent=mode==="live"?"Live run — creating sandboxes…":"Replaying a recorded run…";
+  fetch("/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode})})
+    .then(r=>r.json()).then(({token})=>{
+      es=new EventSource(`/stream/${token}`);
+      es.onmessage=e=>{
+        const evt=JSON.parse(e.data);
+        addRow(evt);updateGoals(evt.goals);
+        statusEl.textContent=evt.node+" · "+evt.message;
+        if(evt.done)finish(evt);
+      };
+      es.addEventListener("end",()=>{es.close();if(running)finish(null);});
+      es.onerror=()=>{es.close();if(running){statusEl.textContent="Stream ended.";finish(null);}};
+    }).catch(err=>{running=false;liveEl.classList.remove("on");btnLive.disabled=false;btnDemo.disabled=false;
+      statusEl.textContent="Could not start: "+err;});
+}
+btnLive.addEventListener("click",()=>launch("live"));
+btnDemo.addEventListener("click",()=>launch("demo"));
+</script>
+</body>
+</html>
