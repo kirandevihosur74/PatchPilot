@@ -16,9 +16,8 @@ pre-reviewed PR for the CodeRabbit beat so you never wait on review latency.
    ```bash
    ./reset-demo.sh          # target vulnerable, old PRs closed
    ```
-3. **Pre-open one PR so CodeRabbit has already reviewed it** (this is your review beat — CodeRabbit takes 1–2 min, too long to wait on camera):
-   - Open http://127.0.0.1:8077 → **Run live** → let it open a PR → wait ~2 min until CodeRabbit posts its review on that PR.
-   - Keep that PR tab open (GitHub → the PR → "Files changed" / the CodeRabbit review).
+3. **Do one full live run first, off-camera** (CodeRabbit takes 1–2 min — too long to wait on tape). Auto-merge is on, so if CodeRabbit approves, the PR merges; keep that merged PR tab open as your review beat.
+   - **Check the verdict — it varies.** CodeRabbit may approve (→ merges) or request changes (→ gate holds, no merge). If it requested changes, `./reset-demo.sh` and run again until you get the ending you want, or use **Replay demo** for a guaranteed approve+merge ending.
 4. **Then reset again** so the on-camera live run starts clean:
    ```bash
    ./reset-demo.sh
@@ -56,19 +55,20 @@ systems: Daytona, Fireworks, Braintrust, CodeRabbit."
 
 The four goal beats fill green as you talk.
 
-**1:30 – 2:15 · The independent gate** *(cut to the pre-reviewed PR tab)*
-> "PatchPilot opened a real pull request — and it doesn't approve its own work.
-> CodeRabbit reviewed it independently."
+**1:30 – 2:15 · The independent gate** *(cut to the reviewed/merged PR tab)*
+> "PatchPilot opened a real pull request — and it doesn't merge its own work on
+> trust. CodeRabbit reviewed it independently, approved it, and because tests
+> *and* review both passed, PatchPilot merged it — autonomously."
 
-Show CodeRabbit's review. Point at a real finding:
-> "It even ran a dependency scan and flagged that the patch doesn't pin the rest
-> of the stack — so the merge is gated on tests *and* an independent review. The
-> agent that writes the patch never approves it."
+Show CodeRabbit's review + the green **Merged** badge. Point at the review:
+> "An independent AI signs off before anything ships. The agent that writes the
+> patch never gets to be the only one who approves it."
 
 **2:15 – 2:45 · Close** *(back to the console, all green)*
-> "Detect, prove, patch, re-prove, review — end to end, in about a minute.
-> Unpatched CVEs sit a median of 252 days because teams can't tell real from
-> noise. PatchPilot proves it, fixes it, and proves it's gone."
+> "Detect, prove, patch, re-prove, review, merge — end to end, autonomously, in
+> about a minute. Unpatched CVEs sit a median of 252 days because teams can't
+> tell real from noise. PatchPilot proves it, fixes it, proves it's gone, and
+> ships it."
 
 ---
 

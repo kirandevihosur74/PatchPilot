@@ -47,8 +47,9 @@ DEMO_EVENTS = [
     {"node": "guard", "message": "Braintrust eval: safe loader used, security preserved", "goals": _g(ep=True, cr=True, tg=True), "_d": 1.4},
     {"node": "reprove", "message": "Sandbox A: same forged YAML → BLOCKED (dead)", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.6},
     {"node": "submit", "message": "opened PR — @coderabbitai review requested", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.4},
-    {"node": "gate", "message": "CI green · CodeRabbit reviewing the patch", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.2},
-    {"node": "done", "message": "Proven exploitable → patched → proven dead. Review it on GitHub.",
+    {"node": "gate", "message": "CI green · CodeRabbit approved the patch", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.3},
+    {"node": "merge", "message": "tests + review green → merged autonomously", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.2},
+    {"node": "done", "message": "Proven exploitable → patched → proven dead → shipped.",
      "goals": _g(ep=True, cr=True, tg=True, eb=True), "done": True, "_d": 0},
 ]
 
