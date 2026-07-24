@@ -56,11 +56,17 @@ class Config:
     # --- GitHub / CodeRabbit (review) ---
     github_token: str = field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
     github_repo: str = field(default_factory=lambda: os.getenv("GITHUB_REPO", ""))  # "owner/name"
+    # Subdir in the repo where the target app lives (PR paths get this prefix).
+    repo_subdir: str = field(default_factory=lambda: os.getenv("PATCHPILOT_REPO_SUBDIR", "").strip("/"))
 
     # --- run knobs ---
     target_path: str = field(default_factory=lambda: os.getenv("PATCHPILOT_TARGET", str(DEFAULT_TARGET)))
     patched_version: str = field(default_factory=lambda: os.getenv("PATCHPILOT_PATCHED_VERSION", "6.0.1"))
     max_fix_iterations: int = field(default_factory=lambda: int(os.getenv("PATCHPILOT_MAX_ITERS", "3")))
+    # Auto-merge the PR when the gate is green. Off -> open PR, report verdict, stop.
+    auto_merge: bool = field(
+        default_factory=lambda: os.getenv("PATCHPILOT_AUTO_MERGE", "true").lower() in ("1", "true", "yes")
+    )
     force_local_sandbox: bool = field(
         default_factory=lambda: os.getenv("PATCHPILOT_LOCAL_SANDBOX", "").lower() in ("1", "true", "yes")
     )

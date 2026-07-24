@@ -1,0 +1,15 @@
+# CodeRabbit config (repo root — read from the branch under review).
+# Docs: https://docs.coderabbit.ai/getting-started/yaml-configuration
+language: en-US
+reviews:
+  # "chill" = less noise; good for a live demo.
+  profile: chill
+  # Emit formal APPROVE / REQUEST_CHANGES reviews (not just comments) so
+  # PatchPilot can gate the merge on the verdict.
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true            # review automatically on PR open + each push
+    drafts: false
+chat:
+  auto_reply: true           # responds to @coderabbitai commands in the PR

@@ -15,8 +15,8 @@ import json
 import re
 from dataclasses import dataclass
 
-DEFAULT_TRIAGE_MODEL = "accounts/fireworks/models/gpt-oss-20b"
-DEFAULT_CODER_MODEL = "accounts/fireworks/models/kimi-k2p7-code"
+DEFAULT_TRIAGE_MODEL = "accounts/fireworks/models/gpt-oss-120b"
+DEFAULT_CODER_MODEL = "accounts/fireworks/models/deepseek-v4-pro"
 
 SECURITY_RULE = (
     "SECURITY RULE (non-negotiable): when fixing PyYAML usage you MUST use "

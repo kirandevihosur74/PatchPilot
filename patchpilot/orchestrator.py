@@ -192,6 +192,9 @@ class Orchestrator:
         gh = GitHubClient(self.config)
         files = self._source_files(sb)
         files["requirements.txt"] = sb.read_file("requirements.txt")
+        subdir = self.config.repo_subdir
+        if subdir:  # target app lives in a subdir of the repo -> prefix PR paths
+            files = {f"{subdir}/{name}": content for name, content in files.items()}
         branch = f"patchpilot/{state.cve_id.lower()}-{state.run_id}"
         title = f"PatchPilot: fix {state.cve_id} in {state.package} ({state.installed_version} -> {state.patched_version})"
         body = self._pr_body(state)
@@ -213,9 +216,12 @@ class Orchestrator:
             span.log(output=gate, metadata={"node": "gate"})
 
         if state.tests_check_ok and state.review_ok:
-            state.node = Node.MERGE
-            state.merged = gh.merge(pr.number)
-            state.log(Node.MERGE, "merged (tests + CodeRabbit both green)" if state.merged else "merge call failed")
+            if self.config.auto_merge:
+                state.node = Node.MERGE
+                state.merged = gh.merge(pr.number)
+                state.log(Node.MERGE, "merged (tests + CodeRabbit both green)" if state.merged else "merge call failed")
+            else:
+                state.log(Node.GATE, f"gate GREEN — auto-merge off, PR left for human review: {pr.url}")
         else:
             self._escalate(state, "merge gate not satisfied (tests or CodeRabbit review pending/failed)")
 

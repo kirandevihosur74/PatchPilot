@@ -21,7 +21,10 @@ WEAKENING_PATTERNS = [
     r"Loader\s*=\s*Loader\b",
     r"Loader\s*=\s*FullLoader\b",
 ]
-SAFE_PATTERN = r"Loader\s*=\s*yaml\.SafeLoader\b|Loader\s*=\s*SafeLoader\b"
+SAFE_PATTERN = (
+    r"Loader\s*=\s*yaml\.SafeLoader\b|Loader\s*=\s*SafeLoader\b"
+    r"|\byaml\.safe_load\s*\(|\bsafe_load\s*\("  # idiomatic secure fix
+)
 
 
 class _NoopSpan:
@@ -70,7 +73,7 @@ def assess_fix_security(patched_sources: dict[str, str]) -> dict[str, Any]:
     if weakened:
         detail = f"weakened security in: {', '.join(weakened)} (unsafe loader kept the RCE)"
     elif used_safe:
-        detail = "SafeLoader used everywhere; security preserved"
+        detail = "safe loader (SafeLoader/safe_load) used; security preserved"
     else:
         detail = "no unsafe loader detected"
     return {"ok": ok, "score": 1.0 if ok else 0.0, "used_safe": used_safe,

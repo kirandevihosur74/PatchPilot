@@ -52,7 +52,8 @@ PATCHPILOT_FORCE_UNSAFE_FIX=1 python3 -m patchpilot --local
 ## Wire the real services
 
 ```bash
-cp .env.example .env      # fill FIREWORKS / DAYTONA / BRAINTRUST / GITHUB keys
+# create a .env with the keys you have (see patchpilot/config.py for all vars):
+#   FIREWORKS_API_KEY, DAYTONA_API_KEY, BRAINTRUST_API_KEY, GITHUB_TOKEN, GITHUB_REPO
 pip install -r requirements.txt
 python3 -m patchpilot      # Daytona sandboxes + Fireworks fixes + Braintrust traces + CodeRabbit gate
 ```
