@@ -222,6 +222,8 @@ class Orchestrator:
                 state.log(Node.MERGE, "merged (tests + CodeRabbit both green)" if state.merged else "merge call failed")
             else:
                 state.log(Node.GATE, f"gate GREEN — auto-merge off, PR left for human review: {pr.url}")
+        elif gate.get("changes_requested"):
+            self._escalate(state, f"CodeRabbit requested changes on {pr.url} — human review needed")
         else:
             self._escalate(state, "merge gate not satisfied (tests or CodeRabbit review pending/failed)")
 

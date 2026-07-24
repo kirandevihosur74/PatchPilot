@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import httpx
+
 API = "https://api.github.com"
 
 
@@ -73,22 +75,34 @@ class GitHubClient:
         all success. Review = a CodeRabbit APPROVED review or a passing CodeRabbit
         check-run."""
         deadline = time.time() + timeout_s
+        cr_login = coderabbit_login.split("[")[0].lower()
         detail = ""
         while True:
-            checks = self._get(f"/repos/{self.repo}/commits/{head_sha}/check-runs").json().get("check_runs", [])
+            try:
+                checks = self._get(f"/repos/{self.repo}/commits/{head_sha}/check-runs").json().get("check_runs", [])
+                reviews = self._get(f"/repos/{self.repo}/pulls/{pr_number}/reviews").json()
+            except (httpx.HTTPError, httpx.TransportError) as exc:  # transient — keep polling
+                detail = f"transient error: {type(exc).__name__}"
+                if time.time() > deadline:
+                    return {"tests_ok": False, "review_ok": False, "changes_requested": False, "detail": detail}
+                time.sleep(10)
+                continue
+
             cr_checks = [c for c in checks if "coderabbit" in (c.get("name", "").lower())]
             ci_checks = [c for c in checks if c not in cr_checks]
-
             tests_ok = bool(ci_checks) and all(c.get("conclusion") == "success" for c in ci_checks)
-            reviews = self._get(f"/repos/{self.repo}/pulls/{pr_number}/reviews").json()
-            cr_reviews = [r for r in reviews if coderabbit_login.split("[")[0] in (r.get("user", {}).get("login", "").lower())]
-            review_approved = any(r.get("state") == "APPROVED" for r in cr_reviews)
-            review_check_ok = bool(cr_checks) and all(c.get("conclusion") == "success" for c in cr_checks)
-            review_ok = review_approved or review_check_ok
 
-            detail = f"ci={[c.get('conclusion') for c in ci_checks]} coderabbit_review={[r.get('state') for r in cr_reviews]} coderabbit_check={[c.get('conclusion') for c in cr_checks]}"
-            if (tests_ok and review_ok) or time.time() > deadline:
-                return {"tests_ok": tests_ok, "review_ok": review_ok, "detail": detail}
+            cr_reviews = [r for r in reviews if cr_login in (r.get("user", {}).get("login", "").lower())]
+            states = [r.get("state") for r in cr_reviews]
+            approved = "APPROVED" in states
+            changes = "CHANGES_REQUESTED" in states
+            review_check_ok = bool(cr_checks) and all(c.get("conclusion") == "success" for c in cr_checks)
+            review_ok = approved or review_check_ok
+
+            detail = f"ci={[c.get('conclusion') for c in ci_checks]} coderabbit_review={states} coderabbit_check={[c.get('conclusion') for c in cr_checks]}"
+            # A merge-ready pass OR a definitive CHANGES_REQUESTED both end the wait.
+            if (tests_ok and review_ok) or changes or time.time() > deadline:
+                return {"tests_ok": tests_ok, "review_ok": review_ok, "changes_requested": changes, "detail": detail}
             time.sleep(10)
 
     def merge(self, pr_number: int, method: str = "squash") -> bool:
