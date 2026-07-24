@@ -1,0 +1,10 @@
+# PatchPilot control plane. The target-app has its own (pinned) requirements.
+# Everything here is optional at runtime — the loop degrades to local/offline
+# mode when a key or package is missing.
+openai>=1.40            # Fireworks (OpenAI-compatible client)
+daytona>=0.21           # isolated sandboxes
+braintrust>=0.0.150     # tracing + evals
+autoevals               # prebuilt scorers (optional)
+httpx>=0.27             # GitHub REST (PR + CodeRabbit gate)
+fastapi                 # control-plane API (POST /run, GET /stream)
+uvicorn                 # ASGI server for the API

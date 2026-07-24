@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtualenvs (incl. sandbox venvs)
+.venv/
+.venv*/
+.sbvenv/
+
+# Secrets / local env
+.env
+
+# Claude Code local machine config
+.claude/settings.local.json
+
+# OS
+.DS_Store
