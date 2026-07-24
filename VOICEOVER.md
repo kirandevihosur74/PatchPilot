@@ -42,14 +42,23 @@ exploitable, now proven dead. All four goals green.
 And it doesn't ship on its own say-so. PatchPilot opens a real pull request, and
 CodeRabbit reviews it independently.
 
-**[1:50 — show CodeRabbit's review + the green "Merged" badge]**
+> Use the ending that matches your take — CodeRabbit's verdict varies run to run.
+
+**[1:50 — ENDING A · CodeRabbit approved + green "Merged" badge]**
 CodeRabbit approved it, the tests passed, and PatchPilot merged it — autonomously.
 The agent that writes the patch never gets to be the only one who approves it.
 
+**[1:50 — ENDING B · CodeRabbit requested changes / gate held]** *(this is the PR #5 take)*
+CodeRabbit reviewed it and pushed back — it ran a dependency scan and flagged that
+the patch doesn't pin the rest of the stack. So the merge is gated: tests *and* an
+independent review both have to pass. The agent that writes the patch never gets to
+ship it alone.
+
 **[2:10 — back to the all-green console]**
-Detect, prove, patch, re-prove, review, merge — end to end, in about a minute.
+Detect, prove, patch, re-prove, review — end to end, in about a minute.
 Unpatched CVEs sit a median of 252 days because teams can't separate real from noise.
-PatchPilot proves it, fixes it, proves it's gone, and ships it.
+PatchPilot proves it's exploitable, fixes it, proves it's gone — and won't ship it
+until an independent reviewer signs off.
 
 **[2:35 — end]**
 
