@@ -12,8 +12,11 @@ cd "$(dirname "$0")"
 REPO="${GITHUB_REPO:-kirandevihosur74/PatchPilot}"
 TAG="vulnerable-baseline"
 
-echo "→ restoring target-app/ from tag '$TAG'"
+echo "→ syncing with origin/main (in case a patch PR was merged)"
 git fetch --tags --quiet origin 2>/dev/null || true
+git merge --ff-only origin/main 2>/dev/null || git merge -m "sync origin/main" origin/main 2>/dev/null || true
+
+echo "→ restoring target-app/ from tag '$TAG'"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   git checkout "$TAG" -- target-app/
 else
