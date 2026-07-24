@@ -207,6 +207,7 @@ footer{padding:60px 0;color:var(--ash);font-size:13px;border-top:1px solid var(-
       <div class="cbtns">
         <button class="btn" id="runlive">Run live</button>
         <button class="btn ghost" id="rundemo">Replay demo</button>
+        <button class="btn ghost" id="reset" title="Restore the vulnerable target + clear old PRs">Reset</button>
       </div>
     </div>
     <div class="goals" id="goals">
@@ -304,6 +305,18 @@ function launch(mode){
 }
 btnLive.addEventListener("click",()=>launch("live"));
 btnDemo.addEventListener("click",()=>launch("demo"));
+
+const btnReset=document.getElementById("reset");
+btnReset.addEventListener("click",()=>{
+  if(running)return;
+  btnReset.disabled=btnLive.disabled=btnDemo.disabled=true;
+  statusEl.textContent="Resetting — restoring vulnerable target, clearing old PRs…";
+  fetch("/reset",{method:"POST"}).then(r=>r.json()).then(d=>{
+    statusEl.textContent=d.ok?"Reset ✓ — target vulnerable, ready for a live run.":"Reset failed (check server log).";
+    if(!d.ok&&d.output)console.warn(d.output);
+  }).catch(e=>{statusEl.textContent="Reset error: "+e;})
+   .finally(()=>{btnReset.disabled=btnLive.disabled=btnDemo.disabled=false;});
+});
 </script>
 </body>
 </html>

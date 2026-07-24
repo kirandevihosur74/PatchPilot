@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import queue
+import subprocess
 import threading
 import time
 import uuid
@@ -21,7 +22,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .config import load_config
+from .config import REPO_ROOT, load_config
 from .orchestrator import Orchestrator
 
 app = FastAPI(title="PatchPilot")
@@ -115,6 +116,20 @@ def stream(token: str):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/reset")
+def reset():
+    """Run reset-demo.sh — restore the vulnerable target + clean up old PRs."""
+    script = REPO_ROOT / "reset-demo.sh"
+    if not script.exists():
+        return JSONResponse({"ok": False, "output": "reset-demo.sh not found"}, status_code=404)
+    try:
+        p = subprocess.run(["bash", str(script)], cwd=str(REPO_ROOT),
+                           capture_output=True, text=True, timeout=120)
+        return {"ok": p.returncode == 0, "output": (p.stdout + p.stderr).strip()}
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"ok": False, "output": "reset timed out"}, status_code=504)
 
 
 @app.get("/meta")
