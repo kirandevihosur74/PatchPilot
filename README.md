@@ -1,70 +1,110 @@
 # PatchPilot
 
-Prove a dependency CVE is **actually exploitable** in your code, patch it, repair
-what the upgrade breaks, and re-run the exploit to prove the bug is **dead** —
-then open a PR that only merges if tests *and* an independent AI review pass.
+An autonomous agent that proves a dependency vulnerability is *actually exploitable*
+in your code, patches it, repairs whatever the upgrade breaks, and re-runs the
+exploit to prove the bug is dead.
 
-> Scanners tell you that you *have* a vulnerable version. None tell you whether
-> you're actually exploitable — so teams drown in noise and patch nothing.
-> PatchPilot writes the exploit, proves the bug is reachable, patches it, fixes
-> what the upgrade breaks, and re-runs the exploit to prove it's dead.
+## The problem
 
-## The loop
+Vulnerability scanners like Dependabot and Snyk match version strings: "you have
+PyYAML 5.3.1, it's in the vulnerable range, here's a ticket." They can't tell whether
+the vulnerable code path is actually reachable in *your* application — so teams drown
+in alerts, can't triage them, and patch nothing. And the scary part, fixing the code
+the upgrade breaks, is left entirely to a human.
+
+PatchPilot closes that loop. It writes a real exploit to prove the CVE is reachable,
+upgrades the dependency, repairs the call sites the upgrade breaks, and re-runs the
+same exploit to prove the vulnerability is gone — without ever weakening security to
+make the tests pass.
+
+## How it works
+
+PatchPilot runs a self-correcting loop across two isolated sandboxes — one is the
+exploit lab, the other is the repair lab:
+
+1. **Detect** — `pip-audit` scans the target and identifies the vulnerable package.
+2. **Prove** — the exploit runs against the vulnerable code; arbitrary code executes.
+3. **Upgrade** — the dependency is bumped to the fixed version.
+4. **Observe** — the test suite is run to surface exactly what the upgrade broke.
+5. **Fix** — a coding model rewrites the broken call sites (retries up to 3 times).
+6. **Verify** — the suite is re-run until it's green.
+7. **Guard** — a security check rejects any fix that keeps the vulnerability alive.
+8. **Re-prove** — the same exploit is run against the patched code; it's now blocked.
+
+The result is four beats you can watch turn green:
+**exploitable → CVE resolved → tests green → exploit blocked.**
+
+The demo target is a small FastAPI service pinned to `PyYAML==5.3.1`
+(CVE-2020-14343, a `yaml.load` bypass that reaches remote code execution). Upgrading
+to 6.0 both kills the CVE and forces a `TypeError` at every call site, so the fix is
+to add `Loader=yaml.SafeLoader`. The guard's job is to make sure the agent never
+"repairs" it with the unsafe `yaml.Loader` — which would pass the tests but keep the
+RCE alive.
+
+## Architecture
 
 ```
-detect  -> prove -> upgrade -> observe -> fix -> verify -> guard -> reprove -> submit -> gate -> merge
-(pip-audit) (RCE)   (bump dep) (tests    (coder (suite   (security (exploit  (PR)     (tests+  (both
-                               break)     model) green)   eval)     dead)              review)  green)
+                 ┌──────────────────────────────┐
+                 │         Orchestrator         │
+                 │  (the detect → reprove loop) │
+                 └───────────────┬──────────────┘
+                                 │
+          ┌──────────────────────┼──────────────────────┐
+          ▼                      ▼                      ▼
+   Sandbox A (exploit)    Sandbox B (repair)      Security guard
+   run the exploit        upgrade + patch +       reject unsafe
+   before / after         re-run the suite        fixes
 ```
 
-Everything dangerous runs in a **sandbox**; the control plane never executes the
-exploit. The pipeline is one sentence:
-
-**isolate (Daytona) → generate (Fireworks) → evaluate (Braintrust) → review (CodeRabbit).**
+Everything dangerous — running the exploit, installing the upgrade, running the
+patched code — happens inside a sandbox. The control plane never executes untrusted
+code. Every service sits behind a single interface, so a run works end-to-end with no
+external keys (local/offline mode) and lights up the real tools when keys are present.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `target-app/` | Intentionally-vulnerable demo target (`PyYAML==5.3.1`, CVE-2020-14343 / RCE). The app PatchPilot attacks and patches. |
-| `patchpilot/` | The agent: `orchestrator.py` (loop), `sandbox.py` + `daytona_sandbox.py` (isolate), `llm.py` (generate), `evals.py` (evaluate), `vcs.py` (review). |
-| `security_eval.py` | Braintrust eval that catches "weaken-to-pass" fixes (`braintrust eval security_eval.py`). |
-| `PLAN.md` | Full build plan. |
+| `patchpilot/` | The agent — `orchestrator.py` (the loop), `sandbox.py` + `daytona_sandbox.py` (isolation), `llm.py` (fix generation), `evals.py` (tracing + security eval), `vcs.py` (review). |
+| `target-app/` | The intentionally-vulnerable demo target the agent attacks and patches. |
+| `security_eval.py` | Standalone Braintrust eval for the security-preservation check. |
 
-## Run it
+## Tools
 
-No keys required — the loop runs fully in local/offline mode:
+| Tool | Role |
+|---|---|
+| **Daytona** | Isolated sandboxes — one runs the live exploit, the other runs the patch-and-repair loop. |
+| **Fireworks** | Two-model loop: a fast model triages test failures, a coder model generates the fix. |
+| **Braintrust** | Per-step tracing and the security-preservation eval that catches weaken-to-pass fixes. |
+| **CodeRabbit** | Independent AI review on the patch PR — the agent that writes the fix never approves it. |
+
+## Tech stack
+
+- **Python** — orchestrator built as idempotent, re-enterable nodes over a single run state.
+- **FastAPI** — the demo target service.
+- **pip-audit** — real vulnerability detection, not a hardcoded CVE list.
+- **pytest** — the test suite that surfaces upgrade breakage.
+- **OpenAI-compatible client** — talks to Fireworks models for triage and fixes.
+
+## Useful commands
+
+Run the full loop locally — no keys required:
 
 ```bash
 python3 -m patchpilot --local
 ```
 
-You'll see all four goals go green: **Exploitable proven → CVE resolved → Tests
-green → Exploit blocked.**
-
-Show the safeguard catching a bad fix (fix passes tests but weakens security):
+Point it at a different target repo, or override the upgrade version:
 
 ```bash
-PATCHPILOT_FORCE_UNSAFE_FIX=1 python3 -m patchpilot --local
-# -> guard ESCALATES: "weakened security ... unsafe loader kept the RCE"
+python3 -m patchpilot --local --target ./target-app --patched-version 6.0.1
 ```
 
-## Wire the real services
+Work with the demo target directly:
 
 ```bash
-# create a .env with the keys you have (see patchpilot/config.py for all vars):
-#   FIREWORKS_API_KEY, DAYTONA_API_KEY, BRAINTRUST_API_KEY, GITHUB_TOKEN, GITHUB_REPO
-pip install -r requirements.txt
-python3 -m patchpilot      # Daytona sandboxes + Fireworks fixes + Braintrust traces + CodeRabbit gate
+cd target-app
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest -q      # suite passes on the pinned version
+.venv/bin/python exploit.py        # prints EXPLOIT ACCEPTED, exit 0
 ```
-
-Each service activates when its key is present; anything missing degrades to the
-local/offline path with no code change. Confirm live Fireworks model ids with the
-`/models` endpoint (they drift); confirm the CodeRabbit check name / bot login on
-one real PR, then they're picked up automatically.
-
-## Status
-
-- ✅ Core loop runs end-to-end (local + offline), both success and escalate paths.
-- ✅ Daytona / Fireworks / Braintrust / GitHub+CodeRabbit wired behind one interface.
-- ⏳ Live run with real keys; SSE control-plane API; Discord/MCP trigger surface (§12).
