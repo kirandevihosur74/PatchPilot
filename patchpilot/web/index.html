@@ -264,7 +264,7 @@ const cfoot=document.getElementById("cfoot");
 const vulnwrap=document.getElementById("vulnwrap");
 const vlist=document.getElementById("vlist");
 const vcount=document.getElementById("vcount");
-let t0=0, es=null, running=false, caps={};
+let t0=0, es=null, running=false, caps={}, previewUrl="";
 
 fetch("/meta").then(r=>r.json()).then(m=>{caps=m||{};
   if(!caps.has_daytona) statusEl.textContent="Heads up: no Daytona key — scans run in a local sandbox.";
@@ -307,19 +307,23 @@ function updateGoals(g){
     el.classList.toggle("fail",v===false);
   });
 }
+function mkbtn(url,label,cls){
+  const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";
+  a.className=cls;a.textContent=label;return a;
+}
+function showPreview(){
+  if(!previewUrl||document.getElementById("previewbtn"))return;
+  const a=mkbtn(previewUrl,"Open sandbox preview","btn");a.id="previewbtn";
+  cfoot.insertBefore(a,cfoot.firstChild);
+}
 function finish(evt){
   running=false;liveEl.classList.remove("on");
   btnScan.disabled=false;repoInput.disabled=false;
   if(evt&&evt.vulns)renderVulns(evt.vulns);
+  if(evt&&evt.preview_url)previewUrl=evt.preview_url;
   cfoot.innerHTML="";
-  if(evt&&evt.preview_url){
-    const a=document.createElement("a");a.href=evt.preview_url;a.target="_blank";a.rel="noopener";
-    a.className="btn";a.textContent="Open sandbox preview";cfoot.appendChild(a);
-  }
-  if(evt&&evt.pr_url){
-    const a=document.createElement("a");a.href=evt.pr_url;a.target="_blank";a.rel="noopener";
-    a.className="btn ghost";a.textContent="View the PR";cfoot.appendChild(a);
-  }
+  if(previewUrl){const a=mkbtn(previewUrl,"Open sandbox preview","btn");a.id="previewbtn";cfoot.appendChild(a);}
+  if(evt&&evt.pr_url)cfoot.appendChild(mkbtn(evt.pr_url,"View the PR","btn ghost"));
   const note=document.createElement("span");note.className="hint";
   note.textContent=(evt&&evt.message)?evt.message:"Scan complete.";
   cfoot.appendChild(note);
@@ -329,7 +333,7 @@ function scanRepo(){
   if(running)return;
   const repo_url=repoInput.value.trim();
   if(!repo_url){statusEl.textContent="Enter a GitHub repo URL first.";repoInput.focus();return;}
-  running=true;t0=Date.now();
+  running=true;t0=Date.now();previewUrl="";
   timeline.innerHTML="";vlist.innerHTML="";vulnwrap.classList.add("hidden");
   cfoot.innerHTML='<span class="hint">Starting…</span>';
   document.querySelectorAll(".goal").forEach(el=>el.classList.remove("done","fail"));
@@ -345,6 +349,7 @@ function scanRepo(){
         const evt=JSON.parse(e.data);
         addRow(evt);updateGoals(evt.goals);
         if(evt.vulns)renderVulns(evt.vulns);
+        if(evt.preview_url){previewUrl=evt.preview_url;showPreview();}
         statusEl.textContent=evt.node+" · "+evt.message;
         if(evt.done)finish(evt);
       };

@@ -54,13 +54,17 @@ class Orchestrator:
                 if state.vulns:
                     self._analyze(state, sb)
                     self._select_target(state)
+                    self._preview(state, sb)
                 else:
                     state.log(Node.SCAN, "no known-vulnerable dependencies found — nothing to remediate")
 
                 state.node = Node.ESCALATE if state.escalated else Node.DONE
                 root.log(output=state.to_dict())
         finally:
-            sb.stop()
+            # Keep the sandbox alive when a preview is published so its link stays
+            # reachable; Daytona auto-stops/deletes it on the configured intervals.
+            if not state.preview_url:
+                sb.stop()
 
         self._print_summary(state)
         return state
@@ -145,6 +149,71 @@ class Orchestrator:
         state.log(Node.ANALYZE,
                   f"target: {tv['package']} {tv['installed_version']} → {tv['vuln_id']} "
                   f"[{verdict}] (fix {state.patched_version or 'none available'})")
+
+    # --- PREVIEW: serve the findings from inside the real Daytona sandbox ---
+    PREVIEW_PORT = 8420
+
+    def _preview(self, state: RunState, sb) -> None:
+        if not self.config.has_daytona:
+            return  # real preview is a Daytona feature; local mode has none
+        state.node = Node.PREVIEW
+        with self.tracer.span("preview") as span:
+            try:
+                state.log(Node.PREVIEW, "publishing findings to the sandbox preview")
+                sb.exec("mkdir -p .patchpilot_preview")
+                sb.write_file(".patchpilot_preview/index.html", self._evidence_html(state))
+                sb.serve(self.PREVIEW_PORT, cwd_rel=".patchpilot_preview")
+                url, token = sb.get_preview_url(self.PREVIEW_PORT)
+                if url:
+                    state.preview_url, state.preview_token = url, token or ""
+                    state.log(Node.PREVIEW, "sandbox preview is live", preview_url=url)
+                else:
+                    state.log(Node.PREVIEW, "preview link unavailable")
+            except Exception as exc:  # a preview miss must never fail the run
+                state.log(Node.PREVIEW, f"preview skipped ({type(exc).__name__})")
+            span.log(output={"preview_url": state.preview_url}, metadata={"node": "preview"})
+
+    @staticmethod
+    def _evidence_html(state: RunState) -> str:
+        from html import escape
+
+        def badge(v):
+            r = v.get("reachability") or {}
+            return escape(r.get("verdict", "—"))
+
+        rows = []
+        for v in state.vulns:
+            r = v.get("reachability") or {}
+            sites = "".join(
+                f"<div class='site'>{escape(s['file'])}:{s['line']}</div>"
+                for s in (r.get("call_sites") or [])[:4]
+            )
+            fix = escape(v["fix_versions"][0]) if v.get("fix_versions") else "—"
+            reachable = (r.get("verdict") == "vulnerable-api-called")
+            rows.append(
+                f"<tr class='{'hot' if reachable else ''}'>"
+                f"<td><b>{escape(v['package'])}</b> <span class='ver'>{escape(v['installed_version'])}</span></td>"
+                f"<td>{escape(v['vuln_id'])}</td>"
+                f"<td><span class='badge'>{badge(v)}</span>{sites}</td>"
+                f"<td>{fix}</td></tr>"
+            )
+        reached = sum(1 for v in state.vulns if (v.get("reachability") or {}).get("reachable"))
+        return (
+            "<!doctype html><meta charset='utf-8'><title>PatchPilot — findings</title>"
+            "<style>body{background:#0d0d12;color:#aeaac0;font:15px/1.5 -apple-system,system-ui,sans-serif;"
+            "margin:0;padding:40px}h1{color:#dad7de;font-weight:500}.sub{color:#62626f;margin-bottom:24px}"
+            "table{width:100%;border-collapse:collapse;font-size:14px}th{text-align:left;color:#62626f;"
+            "text-transform:uppercase;font-size:12px;padding:10px 12px;border-bottom:1px solid #31313a}"
+            "td{padding:12px;border-bottom:1px solid #1c1c22;vertical-align:top}.ver{color:#62626f}"
+            ".badge{display:inline-block;font-size:12px;border:1px solid #31313a;border-radius:3px;"
+            "padding:2px 7px;color:#aeaac0}tr.hot .badge{border-color:#ab8ff1;color:#ab8ff1}"
+            ".site{color:#62626f;font-size:12px;margin-top:4px;font-family:ui-monospace,monospace}</style>"
+            f"<h1>PatchPilot findings</h1><div class='sub'>{escape(state.repo_url or state.target_path)} · "
+            f"{len(state.vulns)} vulnerable dependencies · {reached} reachable in this code</div>"
+            "<table><tr><th>Package</th><th>Advisory</th><th>Reachability</th><th>Fix</th></tr>"
+            + "".join(rows) + "</table>"
+            "<p class='sub' style='margin-top:24px'>Served live from the isolated Daytona sandbox.</p>"
+        )
 
     # --- 1. DETECT ---
     def _detect(self, state: RunState, sb) -> None:
