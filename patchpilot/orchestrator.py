@@ -9,7 +9,7 @@ import json
 import re
 import uuid
 
-from . import scanner
+from . import knowledge, reachability, scanner
 from .config import Config, load_config
 from .evals import Tracer, assess_fix_security
 from .llm import LLM
@@ -52,6 +52,7 @@ class Orchestrator:
                 self._ingest(state, sb, source)
                 self._scan(state, sb)
                 if state.vulns:
+                    self._analyze(state, sb)
                     self._select_target(state)
                 else:
                     state.log(Node.SCAN, "no known-vulnerable dependencies found — nothing to remediate")
@@ -90,19 +91,60 @@ class Orchestrator:
             span.log(output={"count": len(vulns), "manifests": state.manifests},
                      metadata={"node": "scan"})
 
-    # --- select the vuln to remediate (reachability ranking arrives in M2) ---
+    # --- 3. ANALYZE: reachability — is the vulnerable API actually called? ---
+    def _analyze(self, state: RunState, sb) -> None:
+        state.node = Node.ANALYZE
+        with self.tracer.span("analyze") as span:
+            sources = self._repo_sources(sb)
+            state.log(Node.ANALYZE, f"analyzing reachability across {len(sources)} source file(s)")
+            for v in state.vulns:
+                v["reachability"] = reachability.analyze(sources, v, knowledge)
+            state.vulns.sort(key=reachability.rank_key)
+            reached = sum(1 for v in state.vulns if (v.get("reachability") or {}).get("reachable"))
+            # Re-emit the ranked, reachability-annotated list for the UI.
+            state.log(Node.ANALYZE, f"{reached}/{len(state.vulns)} reachable in this repo's code",
+                      vulns=state.vulns)
+            span.log(output={"reachable": reached, "total": len(state.vulns)},
+                     metadata={"node": "analyze"})
+
+    def _repo_sources(self, sb, max_files: int = 600, max_bytes: int = 200_000) -> dict[str, str]:
+        """Pull the repo's own .py source text out of the sandbox for AST analysis.
+        Skips vendored/venv/cache dirs; bounded so a huge repo can't run away."""
+        listing = sb.exec(
+            "find . -type f -name '*.py' "
+            r"\( -path './.sbvenv/*' -o -path '*/site-packages/*' -o -path './.git/*' "
+            r"-o -path '*/node_modules/*' -o -path '*/.venv/*' -o -path '*/venv/*' \) -prune "
+            r"-o -type f -name '*.py' -print"
+        ).output
+        sources: dict[str, str] = {}
+        for raw in listing.splitlines():
+            name = raw.strip().lstrip("./")
+            if not name or len(sources) >= max_files:
+                continue
+            try:
+                text = sb.read_file(name)
+            except Exception:
+                continue
+            if len(text) <= max_bytes:
+                sources[name] = text
+        return sources
+
+    # --- select the vuln to remediate (top of the reachability ranking) ---
     def _select_target(self, state: RunState) -> None:
-        fixable = [v for v in state.vulns if v.get("fix_versions")]
-        tv = (fixable or state.vulns)[0]
+        tv = state.vulns[0]
         state.target_vuln = tv
         state.package = tv["package"]
         state.installed_version = tv["installed_version"]
         state.cve_id = tv["vuln_id"]
         if tv.get("fix_versions"):
             state.patched_version = tv["fix_versions"][0]
-        state.log(Node.SCAN,
+        reach = tv.get("reachability") or {}
+        # The "reachable" beat: proven reachable in this repo's own code.
+        state.goals.exploit_proven = bool(reach.get("reachable"))
+        verdict = reach.get("verdict", "unknown")
+        state.log(Node.ANALYZE,
                   f"target: {tv['package']} {tv['installed_version']} → {tv['vuln_id']} "
-                  f"(fix {state.patched_version or 'none available'})")
+                  f"[{verdict}] (fix {state.patched_version or 'none available'})")
 
     # --- 1. DETECT ---
     def _detect(self, state: RunState, sb) -> None:
