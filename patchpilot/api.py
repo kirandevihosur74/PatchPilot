@@ -1,10 +1,12 @@
 """Control plane for the web dashboard.
 
-  POST /run     -> start a run (mode: "live" runs the real orchestrator; "demo"
-                   replays a canned sequence — the wifi-failure backup).
-  GET  /stream/{token} -> Server-Sent Events, one per loop node, live.
-  GET  /meta    -> repo/config the frontend needs.
+  POST /run     -> start a run on a pasted GitHub repo (body: {"repo_url": ...}).
+  GET  /stream/{token} -> Server-Sent Events, streamed live as the run progresses.
+  GET  /meta    -> capability flags the frontend needs (which services are wired).
   GET  /        -> the single-page app.
+
+The control plane NEVER executes the target repo's code — cloning, installing and
+scanning all happen inside a Sandbox (Daytona in production, local as a fallback).
 
 Run:  uvicorn patchpilot.api:app --port 8000
 """
@@ -13,16 +15,15 @@ from __future__ import annotations
 
 import json
 import queue
-import subprocess
+import re
 import threading
-import time
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .config import REPO_ROOT, load_config
+from .config import load_config
 from .orchestrator import Orchestrator
 
 app = FastAPI(title="PatchPilot")
@@ -31,55 +32,38 @@ WEB = Path(__file__).parent / "web"
 _runs: dict[str, "queue.Queue"] = {}
 _SENTINEL = object()
 
-
-# --- canned demo sequence (mirrors a real run; the presentation backup) ---
-def _g(ep=None, cr=None, tg=None, eb=None):
-    return {"exploit_proven": ep, "cve_resolved": cr, "tests_green": tg, "exploit_blocked": eb}
+_REPO_RE = re.compile(r"^https?://github\.com/[\w.-]+/[\w.-]+/?$|^git@github\.com:[\w.-]+/[\w.-]+(\.git)?$")
 
 
-DEMO_EVENTS = [
-    {"node": "detect", "message": "pip-audit: pyyaml==5.3.1 vulnerable → PYSEC-2021-142 (fix 6.0.1)", "goals": _g(), "_d": 1.4},
-    {"node": "prove", "message": "Sandbox A: forged YAML executed code → ACCEPTED (RCE)", "goals": _g(ep=True), "_d": 1.6},
-    {"node": "upgrade", "message": "bumped pyyaml 5.3.1 → 6.0.1", "goals": _g(ep=True), "_d": 1.1},
-    {"node": "observe", "message": "Sandbox B: pytest → tests break (yaml.load needs Loader)", "goals": _g(ep=True), "_d": 1.4},
-    {"node": "fix", "message": "Fireworks coder: patched parser.py → yaml.safe_load", "goals": _g(ep=True), "_d": 1.6},
-    {"node": "verify", "message": "Sandbox B: pytest → suite green after 1 iteration", "goals": _g(ep=True, tg=True), "_d": 1.3},
-    {"node": "guard", "message": "Braintrust eval: safe loader used, security preserved", "goals": _g(ep=True, cr=True, tg=True), "_d": 1.4},
-    {"node": "reprove", "message": "Sandbox A: same forged YAML → BLOCKED (dead)", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.6},
-    {"node": "submit", "message": "opened PR — @coderabbitai review requested", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.4},
-    {"node": "gate", "message": "CI green · CodeRabbit approved the patch", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.3},
-    {"node": "merge", "message": "tests + review green → merged autonomously", "goals": _g(ep=True, cr=True, tg=True, eb=True), "_d": 1.2},
-    {"node": "done", "message": "Proven exploitable → patched → proven dead → shipped.",
-     "goals": _g(ep=True, cr=True, tg=True, eb=True), "done": True, "_d": 0},
-]
+def _valid_repo_url(url: str) -> bool:
+    return bool(url) and bool(_REPO_RE.match(url.strip()))
 
 
-def _run_live(token: str) -> None:
+def _run_live(token: str, repo_url: str) -> None:
     q = _runs[token]
     cfg = load_config()
-    orch = Orchestrator(cfg, on_event=lambda evt: q.put(evt))
+    orch = Orchestrator(cfg, on_event=lambda evt: q.put(evt), repo_url=repo_url)
     try:
         state = orch.run()
+        n = len(state.vulns)
+        if state.escalated:
+            msg = f"stopped: {state.escalation_reason}"
+        elif n == 0:
+            msg = "No known-vulnerable dependencies found."
+        else:
+            tv = state.target_vuln or {}
+            msg = (f"Found {n} vulnerable dependenc{'y' if n == 1 else 'ies'}. "
+                   f"Top target: {tv.get('package','?')} {tv.get('vuln_id','')}")
         q.put({
-            "node": "done",
-            "message": ("CodeRabbit requested changes — awaiting human review"
-                        if state.escalated else "Proven exploitable → patched → proven dead."),
-            "goals": state.goal_snapshot(), "done": True,
-            "escalated": state.escalated, "pr_url": state.pr_url,
-            "cve": state.cve_id, "package": state.package,
+            "node": "done", "message": msg, "goals": state.goal_snapshot(),
+            "done": True, "escalated": state.escalated,
+            "vulns": state.vulns, "target": state.target_vuln,
+            "preview_url": state.preview_url, "pr_url": state.pr_url,
         })
     except Exception as exc:  # surface, don't hang the stream
         q.put({"node": "error", "message": f"{type(exc).__name__}: {exc}", "done": True, "error": True})
     finally:
         q.put(_SENTINEL)
-
-
-def _run_demo(token: str) -> None:
-    q = _runs[token]
-    for evt in DEMO_EVENTS:
-        q.put({k: v for k, v in evt.items() if k != "_d"})
-        time.sleep(evt.get("_d", 1.2))
-    q.put(_SENTINEL)
 
 
 @app.post("/run")
@@ -88,12 +72,16 @@ async def start_run(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    mode = (body or {}).get("mode", "demo")
+    repo_url = (body or {}).get("repo_url", "").strip()
+    if not _valid_repo_url(repo_url):
+        return JSONResponse(
+            {"error": "Provide a GitHub repo URL, e.g. https://github.com/owner/name"},
+            status_code=400,
+        )
     token = uuid.uuid4().hex[:12]
     _runs[token] = queue.Queue()
-    target = _run_live if mode == "live" else _run_demo
-    threading.Thread(target=target, args=(token,), daemon=True).start()
-    return {"token": token, "mode": mode}
+    threading.Thread(target=_run_live, args=(token, repo_url), daemon=True).start()
+    return {"token": token}
 
 
 @app.get("/stream/{token}")
@@ -119,24 +107,15 @@ def stream(token: str):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.post("/reset")
-def reset():
-    """Run reset-demo.sh — restore the vulnerable target + clean up old PRs."""
-    script = REPO_ROOT / "reset-demo.sh"
-    if not script.exists():
-        return JSONResponse({"ok": False, "output": "reset-demo.sh not found"}, status_code=404)
-    try:
-        p = subprocess.run(["bash", str(script)], cwd=str(REPO_ROOT),
-                           capture_output=True, text=True, timeout=120)
-        return {"ok": p.returncode == 0, "output": (p.stdout + p.stderr).strip()}
-    except subprocess.TimeoutExpired:
-        return JSONResponse({"ok": False, "output": "reset timed out"}, status_code=504)
-
-
 @app.get("/meta")
 def meta():
     cfg = load_config()
-    return {"repo": cfg.github_repo, "repo_url": f"https://github.com/{cfg.github_repo}" if cfg.github_repo else ""}
+    return {
+        "has_daytona": cfg.has_daytona,
+        "has_fireworks": cfg.has_fireworks,
+        "has_braintrust": cfg.has_braintrust,
+        "has_github": cfg.has_github,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

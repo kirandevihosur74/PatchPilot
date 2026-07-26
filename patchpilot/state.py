@@ -10,14 +10,18 @@ from typing import Any, Optional
 
 
 class Node(str, Enum):
-    DETECT = "detect"
-    PROVE = "prove"
+    INGEST = "ingest"      # clone the target repo into the sandbox
+    SCAN = "scan"          # discover manifests + run the real scanner
+    ANALYZE = "analyze"    # reachability: is the vulnerable API actually called
+    DETECT = "detect"      # (legacy) single pip-audit detect
+    PROVE = "prove"        # (legacy) exploit-based proof
     UPGRADE = "upgrade"
     OBSERVE = "observe"
     FIX = "fix"
     VERIFY = "verify"
     GUARD = "guard"
     REPROVE = "reprove"
+    PREVIEW = "preview"    # real Daytona sandbox preview link
     SUBMIT = "submit"
     GATE = "gate"
     MERGE = "merge"
@@ -60,15 +64,21 @@ class TestResult:
 @dataclass
 class RunState:
     run_id: str
-    target_path: str
+    target_path: str            # local path OR git URL cloned into the sandbox
+    repo_url: str = ""          # the pasted GitHub URL (product path)
     package: str = ""
     installed_version: str = ""
     patched_version: str = ""
     cve_id: str = ""
 
-    node: Node = Node.DETECT
+    node: Node = Node.INGEST
     iteration: int = 0
     max_iterations: int = 3
+
+    # scan / analyze outputs
+    vulns: list[dict[str, Any]] = field(default_factory=list)   # all discovered, enriched
+    target_vuln: Optional[dict[str, Any]] = None                # the one being remediated
+    manifests: list[str] = field(default_factory=list)
 
     # step outputs
     exploit_accepted_before: Optional[bool] = None
@@ -78,6 +88,10 @@ class RunState:
     security_eval: Optional[dict[str, Any]] = None
     exploit_accepted_after: Optional[bool] = None
     exploit_evidence_after: str = ""
+
+    # sandbox preview (real Daytona)
+    preview_url: str = ""
+    preview_token: str = ""
 
     # review / merge
     pr_url: str = ""

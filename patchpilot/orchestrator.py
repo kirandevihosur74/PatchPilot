@@ -9,6 +9,7 @@ import json
 import re
 import uuid
 
+from . import scanner
 from .config import Config, load_config
 from .evals import Tracer, assess_fix_security
 from .llm import LLM
@@ -20,55 +21,88 @@ NON_FIXABLE = {"exploit.py"}
 
 
 class Orchestrator:
-    def __init__(self, config: Config | None = None, on_event=None) -> None:
+    def __init__(self, config: Config | None = None, on_event=None, repo_url: str = "") -> None:
         self.config = config or load_config()
-        self.on_event = on_event  # live subscriber (web dashboard); called per node
+        self.on_event = on_event  # live subscriber (web dashboard); called per event
+        self.repo_url = repo_url  # the pasted GitHub URL (product path)
         self.llm = LLM(self.config)
         self.tracer = Tracer(self.config)
 
     # --- entry point ---
     def run(self) -> RunState:
         cfg = self.config
+        source = self.repo_url or cfg.target_path
         state = RunState(
             run_id=uuid.uuid4().hex[:8],
-            target_path=cfg.target_path,
+            target_path=source,
+            repo_url=self.repo_url,
             max_iterations=cfg.max_fix_iterations,
             patched_version=cfg.patched_version,
         )
         if self.on_event:
             state.on_event = self.on_event
         print(cfg.summary())
-        print(f"\n=== PatchPilot run {state.run_id} on {cfg.target_path} ===\n")
+        print(f"\n=== PatchPilot run {state.run_id} on {source} ===\n")
 
-        sandbox_a = make_sandbox(cfg, label="A-exploit")
-        sandbox_b = make_sandbox(cfg, label="B-work")
+        sb = make_sandbox(cfg, label="scan")
         try:
             with self.tracer.span("patchpilot_run", type="task") as root:
-                root.log(input={"target": cfg.target_path})
+                root.log(input={"target": source})
 
-                # Sandbox A: the exploit lab (vulnerable code + pinned dep).
-                sandbox_a.start(); sandbox_a.load_repo(cfg.target_path); sandbox_a.setup()
-                # Sandbox B: the repair lab.
-                sandbox_b.start(); sandbox_b.load_repo(cfg.target_path); sandbox_b.setup()
-
-                self._detect(state, sandbox_b)
-                self._prove(state, sandbox_a)
-                self._upgrade(state, sandbox_b)
-                self._repair_loop(state, sandbox_b)
-                if not state.escalated:
-                    self._guard(state, sandbox_b)
-                if not state.escalated:
-                    self._reprove(state, sandbox_a, sandbox_b)
-                if not state.escalated and self.config.has_github:
-                    self._review(state, sandbox_b)
+                self._ingest(state, sb, source)
+                self._scan(state, sb)
+                if state.vulns:
+                    self._select_target(state)
+                else:
+                    state.log(Node.SCAN, "no known-vulnerable dependencies found — nothing to remediate")
 
                 state.node = Node.ESCALATE if state.escalated else Node.DONE
                 root.log(output=state.to_dict())
         finally:
-            sandbox_a.stop(); sandbox_b.stop()
+            sb.stop()
 
         self._print_summary(state)
         return state
+
+    # --- 1. INGEST: clone the target repo into a fresh sandbox ---
+    def _ingest(self, state: RunState, sb, source: str) -> None:
+        state.node = Node.INGEST
+        is_url = source.startswith(("http://", "https://", "git@"))
+        with self.tracer.span("ingest") as span:
+            state.log(Node.INGEST, f"spinning up sandbox ({sb.label})")
+            sb.start()
+            state.log(Node.INGEST, f"{'cloning repo' if is_url else 'loading local repo'}: {source}")
+            sb.load_repo(source)
+            state.log(Node.INGEST, "preparing scan environment")
+            sb.setup(requirements=None)  # bare env — scanner installs its own tooling
+            span.log(input={"source": source}, metadata={"node": "ingest"})
+
+    # --- 2. SCAN: discover manifests + run the real scanner ---
+    def _scan(self, state: RunState, sb) -> None:
+        state.node = Node.SCAN
+        with self.tracer.span("scan") as span:
+            state.manifests = scanner.discover_manifests(sb)
+            vulns = scanner.scan(sb, manifests=state.manifests,
+                                 log=lambda m: state.log(Node.SCAN, m))
+            state.vulns = vulns
+            # One structured event carrying the full list for the UI to render.
+            state.log(Node.SCAN, f"{len(vulns)} vulnerable dependenc(y/ies) found", vulns=vulns)
+            span.log(output={"count": len(vulns), "manifests": state.manifests},
+                     metadata={"node": "scan"})
+
+    # --- select the vuln to remediate (reachability ranking arrives in M2) ---
+    def _select_target(self, state: RunState) -> None:
+        fixable = [v for v in state.vulns if v.get("fix_versions")]
+        tv = (fixable or state.vulns)[0]
+        state.target_vuln = tv
+        state.package = tv["package"]
+        state.installed_version = tv["installed_version"]
+        state.cve_id = tv["vuln_id"]
+        if tv.get("fix_versions"):
+            state.patched_version = tv["fix_versions"][0]
+        state.log(Node.SCAN,
+                  f"target: {tv['package']} {tv['installed_version']} → {tv['vuln_id']} "
+                  f"(fix {state.patched_version or 'none available'})")
 
     # --- 1. DETECT ---
     def _detect(self, state: RunState, sb) -> None:

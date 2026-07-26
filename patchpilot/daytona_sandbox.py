@@ -71,7 +71,9 @@ class DaytonaSandbox:
             rel = path.relative_to(local_root).as_posix()
             self._sandbox.fs.upload_file(str(path), f"{dest_root}/{rel}")
 
-    def setup(self, requirements: str = "requirements.txt") -> ExecResult:
+    def setup(self, requirements: Optional[str] = "requirements.txt") -> ExecResult:
+        if not requirements:
+            return ExecResult(0, "", "")
         return self.exec(f"python -m pip install -r {requirements}")
 
     def py(self) -> str:
