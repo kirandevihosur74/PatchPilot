@@ -5,13 +5,13 @@ sandbox. isolate (Daytona) -> generate (Fireworks) -> evaluate (Braintrust)
 
 from __future__ import annotations
 
-import json
 import re
+import shlex
 import uuid
 
 from . import knowledge, reachability, scanner
 from .config import Config, load_config
-from .evals import Tracer, assess_fix_security
+from .evals import Tracer
 from .llm import LLM
 from .sandbox import make_sandbox
 from .state import Node, RunState, TestResult
@@ -54,6 +54,9 @@ class Orchestrator:
                 if state.vulns:
                     self._analyze(state, sb)
                     self._select_target(state)
+                    self._remediate(state, sb)
+                    if not state.escalated and self.config.has_github and state.changed_paths:
+                        self._review(state, sb)
                     self._preview(state, sb)
                 else:
                     state.log(Node.SCAN, "no known-vulnerable dependencies found — nothing to remediate")
@@ -215,232 +218,308 @@ class Orchestrator:
             "<p class='sub' style='margin-top:24px'>Served live from the isolated Daytona sandbox.</p>"
         )
 
-    # --- 1. DETECT ---
-    def _detect(self, state: RunState, sb) -> None:
-        state.node = Node.DETECT
-        with self.tracer.span("detect") as span:
-            sb.exec(f"{sb.py()} -m pip install --quiet pip-audit")
-            res = sb.exec(f"{sb.py()} -m pip_audit -r requirements.txt -f json")
-            pkg, ver, cve, fix = self._parse_pip_audit(res.output)
-            state.package, state.installed_version, state.cve_id = pkg, ver, cve
-            if fix and not state.patched_version:
-                state.patched_version = fix
-            state.log(Node.DETECT, f"pip-audit: {pkg}=={ver} vulnerable -> {cve} (fix {state.patched_version})")
-            span.log(input="pip-audit -r requirements.txt",
-                     output={"package": pkg, "version": ver, "cve": cve},
-                     metadata={"node": "detect"})
-
-    # --- 2. PROVE (Sandbox A) ---
-    def _prove(self, state: RunState, sb) -> None:
-        state.node = Node.PROVE
-        with self.tracer.span("prove") as span:
-            res = sb.exec(f"{sb.py()} exploit.py")
-            accepted = res.exit_code == 0
-            state.exploit_accepted_before = accepted
-            state.exploit_evidence_before = self._verdict_line(res.output)
-            state.goals.exploit_proven = accepted
-            state.log(Node.PROVE, f"exploit on vulnerable code -> {'ACCEPTED (RCE)' if accepted else 'not accepted'}")
-            span.log(output={"accepted": accepted, "evidence": state.exploit_evidence_before},
-                     scores={"exploitable": 1.0 if accepted else 0.0}, metadata={"node": "prove"})
-        if not state.exploit_accepted_before:
-            self._escalate(state, "exploit did not reproduce on the vulnerable target")
-
-    # --- 3. UPGRADE (Sandbox B) ---
+    # --- UPGRADE: move the target package to an installable fixed version ---
     def _upgrade(self, state: RunState, sb) -> None:
-        if state.escalated:
+        if not state.patched_version:
+            self._escalate(state, f"no fix version is available for {state.cve_id}")
             return
         state.node = Node.UPGRADE
         with self.tracer.span("upgrade") as span:
-            reqs = sb.read_file("requirements.txt")
-            pkg = state.package or "PyYAML"
-            bumped = re.sub(rf"(?im)^{re.escape(pkg)}\s*==.*$", f"{pkg}=={state.patched_version}", reqs)
-            if bumped == reqs:  # fall back to case-insensitive contains
-                bumped = re.sub(r"(?im)^pyyaml\s*==.*$", f"PyYAML=={state.patched_version}", reqs)
-            sb.write_file("requirements.txt", bumped)
-            sb.exec(f"{sb.py()} -m pip install -r requirements.txt")
-            state.log(Node.UPGRADE, f"bumped {pkg} -> {state.patched_version}")
-            span.log(output={"requirements": bumped}, metadata={"node": "upgrade"})
+            pkg, target = state.package, state.patched_version
+            # Prefer the advisory's exact fix; if it won't build/install on this
+            # Python (older pins often don't), fall back to the newest release >= fix.
+            r = sb.exec(f"{sb.py()} -m pip install '{pkg}=={target}'")
+            if r.exit_code != 0:
+                state.log(Node.UPGRADE,
+                          f"{pkg}=={target} won't install here — moving to the newest release ≥ {target}")
+                r2 = sb.exec(f"{sb.py()} -m pip install --upgrade '{pkg}>={target}'")
+                if r2.exit_code != 0:
+                    self._escalate(state, f"could not install a fixed {pkg} (>= {target}) in this environment")
+                    span.log(output={"error": "install failed"}, metadata={"node": "upgrade"})
+                    return
+            resolved = self._installed_version(sb, pkg) or target
+            state.patched_version = resolved
 
-    # --- 4-6. OBSERVE / FIX / VERIFY loop ---
-    def _repair_loop(self, state: RunState, sb) -> None:
+            changed: list[str] = []
+            for m in state.manifests:
+                if not m.lower().endswith(".txt"):
+                    continue  # v1 edits requirements files; other manifests: install-only
+                try:
+                    content = sb.read_file(m)
+                except Exception:
+                    continue
+                bumped = self._bump_pin(content, pkg, resolved)
+                if bumped != content:
+                    sb.write_file(m, bumped)
+                    changed.append(m)
+            # Install the repo's full deps (against the bumped pin) + pytest so the suite can run.
+            for m in state.manifests:
+                if m.lower().endswith(".txt"):
+                    sb.exec(f"{sb.py()} -m pip install -r {m}")
+            sb.exec(f"{sb.py()} -m pip install --quiet pytest")
+            for c in changed:
+                if c not in state.changed_paths:
+                    state.changed_paths.append(c)
+            state.log(Node.UPGRADE, f"upgraded {pkg} → {resolved}"
+                      + (f" (pinned in {', '.join(changed)})" if changed else " (pin not in a requirements file)"))
+            span.log(output={"changed": changed, "version": resolved}, metadata={"node": "upgrade"})
+
+    @staticmethod
+    def _installed_version(sb, pkg: str) -> str:
+        out = sb.exec(f"{sb.py()} -m pip show {pkg}").output
+        m = re.search(r"(?im)^Version:\s*(.+)$", out)
+        return m.group(1).strip() if m else ""
+
+    @staticmethod
+    def _bump_pin(content: str, pkg: str, version: str) -> str:
+        """Pin `pkg` to `version` in a requirements file, preserving the original
+        name casing. Matches any comparator (==, >=, ~=, …); leaves other lines alone."""
+        pat = re.compile(rf"(?im)^(\s*)({re.escape(pkg)})(\s*)(==|>=|~=|<=|!=|<|>)([^\n#]*)")
+        return pat.sub(rf"\1\2\g<3>=={version}", content)
+
+    # --- OBSERVE / FIX / VERIFY (or the honest no-tests path) ---
+    def _remediate(self, state: RunState, sb) -> None:
+        self._upgrade(state, sb)
         if state.escalated:
             return
-        tests = self._run_tests(state, sb, Node.OBSERVE)
-        state.tests = tests
-        if tests.all_green:
-            state.log(Node.OBSERVE, "no breakage from the upgrade (unexpected) — continuing")
-            state.goals.tests_green = True
-            return
+        status, tr = self._run_tests(state, sb, Node.OBSERVE)
+        if status == "none":
+            state.has_tests = False
+            state.goals.tests_green = None  # not applicable
+            ok = self._import_smoke(state, sb)
+            state.log(Node.OBSERVE,
+                      "no runnable test suite — verified the repo's modules still import"
+                      if ok else "no runnable test suite — some modules fail to import (flagged in the PR)")
+        else:
+            state.has_tests = True
+            state.tests = tr
+            if tr.all_green:
+                state.goals.tests_green = True
+                state.log(Node.OBSERVE, "suite still green after the upgrade — no breakage to repair")
+            else:
+                state.log(Node.OBSERVE, f"pytest: {tr.passed} passed, {tr.failed} failed, {tr.errors} error(s)")
+                self._repair(state, sb, tr)
+        if not state.escalated:
+            self._guard(state, sb)
+        if not state.escalated:
+            self._reprove(state, sb)
 
+    def _repair(self, state: RunState, sb, tr: TestResult) -> None:
         while state.iteration < state.max_iterations:
             state.iteration += 1
-            self._fix(state, sb, tests)
-            tests = self._run_tests(state, sb, Node.VERIFY)
-            state.tests = tests
-            if tests.all_green:
+            self._fix(state, sb, tr)
+            status, tr = self._run_tests(state, sb, Node.VERIFY)
+            state.tests = tr
+            if status != "none" and tr.all_green:
                 state.goals.tests_green = True
                 state.log(Node.VERIFY, f"suite green after {state.iteration} iteration(s)")
                 return
             state.log(Node.VERIFY, f"still failing after iteration {state.iteration}")
         self._escalate(state, f"tests still failing after {state.max_iterations} fix iterations")
 
-    def _fix(self, state: RunState, sb, tests: TestResult) -> None:
+    def _fix(self, state: RunState, sb, tr: TestResult) -> None:
         state.node = Node.FIX
         with self.tracer.span("fix") as span:
-            files = self._source_files(sb)
-            changed = self.llm.generate_fix(files, tests.raw)
+            files = self._fix_candidates(state, sb, tr)
+            changed = self.llm.generate_fix(files, tr.raw) if files else {}
             for name, content in changed.items():
                 sb.write_file(name, content)
                 state.fixes_applied.append({"file": name, "iteration": str(state.iteration)})
+                if name not in state.changed_paths:
+                    state.changed_paths.append(name)
             state.log(Node.FIX, f"iteration {state.iteration}: patched {', '.join(changed) or '(no change)'}"
                       + ("" if self.llm.online else " [offline fix]"))
-            span.log(input={"failure": tests.raw[:2000]}, output={"changed": list(changed)},
+            span.log(input={"failure": tr.raw[:2000]}, output={"changed": list(changed)},
                      metadata={"node": "fix", "iteration": state.iteration, "online": self.llm.online})
 
-    # --- 7. GUARD (Braintrust security eval) ---
+    # --- GUARD: did the fix weaken security? (generalized per package) ---
     def _guard(self, state: RunState, sb) -> None:
         state.node = Node.GUARD
         with self.tracer.span("guard") as span:
-            patched = self._source_files(sb)
-            verdict = assess_fix_security(patched)
-            state.security_eval = verdict
-            span.log(output=verdict, scores={"security_preservation": verdict["score"]},
-                     metadata={"node": "guard"})
-            state.log(Node.GUARD, f"security eval: {verdict['detail']}")
-            if not verdict["ok"]:
-                state.goals.cve_resolved = False
-                self._escalate(state, f"fix weakened security: {verdict['detail']}")
+            patterns = knowledge.guard_patterns(state.package)
+            weakened: list[str] = []
+            if patterns:
+                for p in state.changed_paths:
+                    if not p.endswith(".py"):
+                        continue
+                    try:
+                        content = sb.read_file(p)
+                    except Exception:
+                        continue
+                    if any(re.search(pat, content) for pat in patterns):
+                        weakened.append(p)
+            ok = not weakened
+            if not patterns:
+                detail = f"no package-specific regression rule for {state.package}; relying on tests + re-scan"
+            elif ok:
+                detail = f"security preserved — no unsafe {state.package} pattern in the patch"
             else:
-                state.goals.cve_resolved = True
+                detail = f"fix weakened security in {', '.join(weakened)}"
+            state.security_eval = {"ok": ok, "detail": detail, "score": 1.0 if ok else 0.0}
+            state.log(Node.GUARD, f"security eval: {detail}")
+            span.log(output=state.security_eval,
+                     scores={"security_preservation": state.security_eval["score"]},
+                     metadata={"node": "guard"})
+            if not ok:
+                state.goals.cve_resolved = False
+                self._escalate(state, f"fix weakened security: {detail}")
 
-    # --- 8. RE-PROVE (Sandbox A, patched) ---
-    def _reprove(self, state: RunState, sb_a, sb_b) -> None:
+    # --- RE-PROVE: re-scan to confirm the advisory is gone ---
+    def _reprove(self, state: RunState, sb) -> None:
         state.node = Node.REPROVE
         with self.tracer.span("reprove") as span:
-            # Bring Sandbox A up to the patched state: same exploit, fixed code.
-            sb_a.write_file("requirements.txt", sb_b.read_file("requirements.txt"))
-            for name in self._source_files(sb_b):
-                sb_a.write_file(name, sb_b.read_file(name))
-            sb_a.exec(f"{sb_a.py()} -m pip install -r requirements.txt")
-            res = sb_a.exec(f"{sb_a.py()} exploit.py")
-            blocked = res.exit_code != 0
-            state.exploit_accepted_after = not blocked
-            state.exploit_evidence_after = self._verdict_line(res.output)
-            state.goals.exploit_blocked = blocked
-            state.log(Node.REPROVE, f"same exploit on patched code -> {'BLOCKED (dead)' if blocked else 'STILL ACCEPTED!'}")
-            span.log(output={"blocked": blocked, "evidence": state.exploit_evidence_after},
-                     scores={"cve_dead": 1.0 if blocked else 0.0}, metadata={"node": "reprove"})
-        if not blocked:
-            self._escalate(state, "exploit still succeeds after patch")
+            vulns = scanner.scan(sb, manifests=state.manifests, log=None)
+            pkg, vid = state.package.lower(), state.cve_id
+            still = any(v["vuln_id"] == vid and v["package"].lower() == pkg for v in vulns)
+            cleared = not still
+            state.goals.exploit_blocked = cleared
+            state.goals.cve_resolved = cleared and (state.security_eval or {}).get("ok", True)
+            state.exploit_evidence_after = ("re-scan: advisory no longer reported"
+                                            if cleared else "re-scan: advisory still present")
+            state.log(Node.REPROVE, f"re-scan: {vid} {'cleared — vulnerability gone' if cleared else 'STILL PRESENT'}")
+            span.log(output={"cleared": cleared}, scores={"cve_dead": 1.0 if cleared else 0.0},
+                     metadata={"node": "reprove"})
+            if not cleared:
+                self._escalate(state, f"{vid} still present after upgrade")
 
-    # --- 9-11. SUBMIT / GATE / MERGE (GitHub + CodeRabbit) ---
+    # --- REVIEW: open a PR on the pasted repo (honest escalation w/o push access) ---
     def _review(self, state: RunState, sb) -> None:
         from .vcs import GitHubClient
 
-        gh = GitHubClient(self.config)
-        files = self._source_files(sb)
-        files["requirements.txt"] = sb.read_file("requirements.txt")
-        subdir = self.config.repo_subdir
-        if subdir:  # target app lives in a subdir of the repo -> prefix PR paths
-            files = {f"{subdir}/{name}": content for name, content in files.items()}
-        branch = f"patchpilot/{state.cve_id.lower()}-{state.run_id}"
-        title = f"PatchPilot: fix {state.cve_id} in {state.package} ({state.installed_version} -> {state.patched_version})"
+        repo = self._repo_slug(state.repo_url) or self.config.github_repo
+        files: dict[str, str] = {}
+        for p in state.changed_paths:
+            try:
+                files[p] = sb.read_file(p)
+            except Exception:
+                pass
+        if not files:
+            return
+        branch = f"patchpilot/{re.sub(r'[^a-z0-9.-]+', '-', state.cve_id.lower())}-{state.run_id}"
+        title = (f"PatchPilot: fix {state.cve_id} in {state.package} "
+                 f"({state.installed_version} -> {state.patched_version})")
         body = self._pr_body(state)
-
         state.node = Node.SUBMIT
         with self.tracer.span("submit") as span:
-            pr = gh.open_pr(branch, title, body, files)
+            try:
+                gh = GitHubClient(self.config, repo=repo)
+                pr = gh.open_pr(branch, title, body, files)
+            except Exception as exc:
+                self._escalate(state,
+                               f"patch is ready but couldn't open a PR on {repo} ({type(exc).__name__}) — "
+                               f"likely no push access; a fork-based flow is the next step")
+                span.log(output={"error": str(exc)}, metadata={"node": "submit"})
+                return
             state.pr_url, state.pr_number = pr.url, pr.number
-            gh.comment(pr.number, "@coderabbitai review")
+            try:
+                gh.comment(pr.number, "@coderabbitai review")
+            except Exception:
+                pass
             state.log(Node.SUBMIT, f"opened PR {pr.url}")
             span.log(output={"pr": pr.url}, metadata={"node": "submit"})
 
-        state.node = Node.GATE
-        with self.tracer.span("gate") as span:
-            gate = gh.poll_gate(pr.number, pr.head_sha, timeout_s=300)
-            state.tests_check_ok = gate["tests_ok"]
-            state.review_ok = gate["review_ok"]
-            state.log(Node.GATE, f"gate: tests_ok={gate['tests_ok']} review_ok={gate['review_ok']}")
-            span.log(output=gate, metadata={"node": "gate"})
+        if self.config.auto_merge:
+            self._gate_and_merge(state, gh, pr)
+        else:
+            state.log(Node.GATE, f"PR open — awaiting tests + CodeRabbit review: {pr.url}")
 
+    def _gate_and_merge(self, state: RunState, gh, pr) -> None:
+        state.node = Node.GATE
+        gate = gh.poll_gate(pr.number, pr.head_sha, timeout_s=300)
+        state.tests_check_ok, state.review_ok = gate["tests_ok"], gate["review_ok"]
+        state.log(Node.GATE, f"gate: tests_ok={gate['tests_ok']} review_ok={gate['review_ok']}")
         if state.tests_check_ok and state.review_ok:
-            if self.config.auto_merge:
-                state.node = Node.MERGE
-                state.merged = gh.merge(pr.number)
-                state.log(Node.MERGE, "merged (tests + CodeRabbit both green)" if state.merged else "merge call failed")
-            else:
-                state.log(Node.GATE, f"gate GREEN — auto-merge off, PR left for human review: {pr.url}")
+            state.node = Node.MERGE
+            state.merged = gh.merge(pr.number)
+            state.log(Node.MERGE, "merged (tests + CodeRabbit both green)" if state.merged else "merge call failed")
         elif gate.get("changes_requested"):
             self._escalate(state, f"CodeRabbit requested changes on {pr.url} — human review needed")
         else:
-            self._escalate(state, "merge gate not satisfied (tests or CodeRabbit review pending/failed)")
+            state.log(Node.GATE, f"gate not yet green — PR left open for review: {pr.url}")
 
     def _pr_body(self, state: RunState) -> str:
+        r = (state.target_vuln or {}).get("reachability") or {}
+        sites = ", ".join(f"`{s['file']}:{s['line']}`" for s in (r.get("call_sites") or [])[:5]) or "n/a"
+        if state.has_tests is False:
+            tests = "no runnable suite in a clean checkout — imports verified"
+        elif state.goals.tests_green:
+            tests = f"green after repair ({state.iteration} iteration(s))" if state.iteration else "green (no breakage)"
+        else:
+            tests = "see run log"
         return (
             f"Automated patch by **PatchPilot**.\n\n"
-            f"- **CVE:** {state.cve_id} in `{state.package}=={state.installed_version}`\n"
-            f"- **Proven exploitable:** {state.exploit_evidence_before}\n"
+            f"- **Advisory:** {state.cve_id} in `{state.package}=={state.installed_version}`\n"
+            f"- **Reachability:** {r.get('verdict', 'unknown')} — {sites}\n"
             f"- **Upgrade:** `{state.package}` -> `{state.patched_version}`\n"
-            f"- **Repair:** {len(state.fixes_applied)} call site(s) fixed over {state.iteration} iteration(s)\n"
-            f"- **Security preserved:** {state.security_eval['detail'] if state.security_eval else 'n/a'}\n"
-            f"- **Re-proven dead:** {state.exploit_evidence_after}\n\n"
+            f"- **Repair:** {len(state.fixes_applied)} file(s) over {state.iteration} iteration(s)\n"
+            f"- **Security:** {state.security_eval['detail'] if state.security_eval else 'n/a'}\n"
+            f"- **Tests:** {tests}\n"
+            f"- **Re-scan:** advisory {'cleared' if state.goals.exploit_blocked else 'still present'}\n\n"
             f"The agent that wrote this patch does not approve it — merge gates on tests + CodeRabbit."
         )
 
     # --- helpers ---
-    def _run_tests(self, state: RunState, sb, node: Node) -> TestResult:
+    def _run_tests(self, state: RunState, sb, node: Node):
+        """Return (status, TestResult). status is 'ran' or 'none' (no suite collected)."""
         state.node = node
+        sb.exec(f"{sb.py()} -m pip install --quiet pytest")
         res = sb.exec(f"{sb.py()} -m pytest -q --tb=short")
+        if res.exit_code == 5:  # pytest exit code 5 = no tests collected
+            return "none", TestResult(raw=res.output)
         tr = self._parse_pytest(res.output)
         tr.raw = res.output
-        if node == Node.OBSERVE:
-            state.log(node, f"pytest: {tr.passed} passed, {tr.failed} failed, {tr.errors} error(s)")
-        return tr
+        return "ran", tr
 
-    def _source_files(self, sb) -> dict[str, str]:
-        listing = sb.exec("ls *.py").output.split()
+    def _fix_candidates(self, state: RunState, sb, tr: TestResult) -> dict[str, str]:
+        """Source files worth sending to the fixer: those named in the failing
+        traceback plus the reachability call sites. Bounded; never library code."""
+        paths: list[str] = []
+        for m in re.finditer(r"([\w./-]+\.py):\d+", tr.raw or ""):
+            p = m.group(1).lstrip("./")
+            if p and "site-packages" not in p and ".sbvenv" not in p and not p.startswith("/"):
+                paths.append(p)
+        for s in ((state.target_vuln or {}).get("reachability") or {}).get("call_sites", []):
+            paths.append(s["file"])
         files: dict[str, str] = {}
-        for name in listing:
-            if name in NON_FIXABLE:
+        for p in paths:
+            if p in files or p in NON_FIXABLE or len(files) >= 8:
                 continue
             try:
-                files[name] = sb.read_file(name)
+                files[p] = sb.read_file(p)
             except Exception:
                 pass
         return files
+
+    def _import_smoke(self, state: RunState, sb) -> bool:
+        """No-tests fallback: do the repo's top-level modules still import after the
+        upgrade? Runs inside the sandbox (executes import-time code safely there)."""
+        script = (
+            "import sys, importlib, pathlib\n"
+            "sys.path.insert(0, '.')\n"
+            "mods=set()\n"
+            "for p in pathlib.Path('.').iterdir():\n"
+            "  if p.suffix=='.py' and p.stem not in ('setup','conftest'): mods.add(p.stem)\n"
+            "  elif p.is_dir() and (p/'__init__.py').exists(): mods.add(p.name)\n"
+            "bad=[]\n"
+            "for m in sorted(mods):\n"
+            "  try: importlib.import_module(m)\n"
+            "  except Exception as e: bad.append(m+':'+type(e).__name__)\n"
+            "print('SMOKE_BAD='+';'.join(bad))\n"
+        )
+        res = sb.exec(f"{sb.py()} -c {shlex.quote(script)}")
+        m = re.search(r"SMOKE_BAD=(.*)", res.output)
+        return bool(m) and not m.group(1).strip()
+
+    @staticmethod
+    def _repo_slug(url: str) -> str:
+        m = re.search(r"github\.com[:/]+([\w.-]+/[\w.-]+?)(?:\.git)?/?$", url or "")
+        return m.group(1) if m else ""
 
     def _escalate(self, state: RunState, reason: str) -> None:
         state.escalated = True
         state.escalation_reason = reason
         state.node = Node.ESCALATE
         state.log(Node.ESCALATE, f"ESCALATE — {reason}")
-
-    @staticmethod
-    def _verdict_line(output: str) -> str:
-        for line in output.splitlines():
-            if line.startswith("RESULT"):
-                return line.strip()
-        return output.strip().splitlines()[-1] if output.strip() else ""
-
-    @staticmethod
-    def _parse_pip_audit(output: str):
-        pkg = ver = cve = fix = ""
-        try:
-            data = json.loads(output[output.find("{"): output.rfind("}") + 1])
-            deps = data.get("dependencies", data.get("results", []))
-            for dep in deps:
-                vulns = dep.get("vulns", [])
-                if vulns:
-                    pkg, ver = dep.get("name", ""), dep.get("version", "")
-                    cve = vulns[0].get("id", "")
-                    fixes = vulns[0].get("fix_versions", [])
-                    fix = fixes[0] if fixes else ""
-                    break
-        except Exception:
-            m = re.search(r"(?im)^(\S+)\s+(\S+)\s+(PYSEC-\S+|CVE-\S+)", output)
-            if m:
-                pkg, ver, cve = m.group(1), m.group(2), m.group(3)
-        return pkg or "PyYAML", ver or "5.3.1", cve or "PYSEC-2021-142", fix
 
     @staticmethod
     def _parse_pytest(output: str) -> TestResult:

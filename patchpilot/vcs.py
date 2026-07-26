@@ -28,10 +28,10 @@ class PRResult:
 
 
 class GitHubClient:
-    def __init__(self, config) -> None:
+    def __init__(self, config, repo: Optional[str] = None) -> None:
         import httpx
 
-        self.repo = config.github_repo  # "owner/name"
+        self.repo = repo or config.github_repo  # "owner/name" — the PR target
         self._http = httpx.Client(
             base_url=API,
             headers={

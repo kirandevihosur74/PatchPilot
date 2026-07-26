@@ -80,6 +80,10 @@ class RunState:
     target_vuln: Optional[dict[str, Any]] = None                # the one being remediated
     manifests: list[str] = field(default_factory=list)
 
+    # remediation
+    changed_paths: list[str] = field(default_factory=list)      # files the PR will carry
+    has_tests: Optional[bool] = None                            # repo has a runnable suite
+
     # step outputs
     exploit_accepted_before: Optional[bool] = None
     exploit_evidence_before: str = ""
