@@ -292,9 +292,10 @@ function renderVulns(vulns){
       ?`fix → ${escapeHtml(v.fix_versions[0])}`:`<span class="no">no fix listed</span>`;
     const reach=v.reachability&&v.reachability.verdict
       ?`<span class="badge reach">${escapeHtml(v.reachability.verdict)}</span> `:"";
+    const eco=v.ecosystem?`<span class="badge">${escapeHtml(v.ecosystem)}</span> `:"";
     row.innerHTML=
       `<div><div class="vpkg">${escapeHtml(v.package)}<span class="ver">${escapeHtml(v.installed_version)}</span></div>`
-      +`<div class="vid">${reach}${escapeHtml(v.vuln_id)}${v.severity?(" · "+escapeHtml(String(v.severity))):""}</div></div>`
+      +`<div class="vid">${eco}${reach}${escapeHtml(v.vuln_id)}${v.severity?(" · "+escapeHtml(String(v.severity))):""}</div></div>`
       +`<div class="vfix">${fix}</div>`;
     vlist.appendChild(row);
   });

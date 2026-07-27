@@ -69,8 +69,6 @@ class Config:
 
     # --- run knobs ---
     target_path: str = field(default_factory=lambda: os.getenv("PATCHPILOT_TARGET", str(DEFAULT_TARGET)))
-    # Empty = data-driven (use the advisory's fix version). Set only to force one.
-    patched_version: str = field(default_factory=lambda: os.getenv("PATCHPILOT_PATCHED_VERSION", ""))
     max_fix_iterations: int = field(default_factory=lambda: int(os.getenv("PATCHPILOT_MAX_ITERS", "3")))
     # Auto-merge the PR when the gate is green. Off -> open PR, report verdict, stop.
     auto_merge: bool = field(

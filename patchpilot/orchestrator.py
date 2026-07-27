@@ -53,9 +53,13 @@ class Orchestrator:
                 if state.vulns:
                     self._analyze(state, sb)
                     self._select_target(state)
-                    self._remediate(state, sb)
-                    if not state.escalated and self.config.has_github and state.changed_paths:
-                        self._review(state, sb)
+                    if (state.target_vuln or {}).get("ecosystem") == "npm":
+                        state.log(Node.ANALYZE,
+                                  "npm remediation isn't supported yet — detection + reachability only")
+                    else:
+                        self._remediate(state, sb)
+                        if not state.escalated and self.config.has_github and state.changed_paths:
+                            self._review(state, sb)
                     self._preview(state, sb)
                 else:
                     state.log(Node.SCAN, "no known-vulnerable dependencies found — nothing to remediate")
@@ -101,10 +105,16 @@ class Orchestrator:
     def _analyze(self, state: RunState, sb) -> None:
         state.node = Node.ANALYZE
         with self.tracer.span("analyze") as span:
-            sources = self._repo_sources(sb)
-            state.log(Node.ANALYZE, f"analyzing reachability across {len(sources)} source file(s)")
+            ecosystems = {v.get("ecosystem", "PyPI") for v in state.vulns}
+            py_sources = self._repo_sources(sb) if "PyPI" in ecosystems else {}
+            js_sources = self._repo_sources_js(sb) if "npm" in ecosystems else {}
+            total = len(py_sources) + len(js_sources)
+            state.log(Node.ANALYZE, f"analyzing reachability across {total} source file(s)")
             for v in state.vulns:
-                v["reachability"] = reachability.analyze(sources, v, knowledge)
+                if v.get("ecosystem") == "npm":
+                    v["reachability"] = reachability.analyze_js(js_sources, v)
+                else:
+                    v["reachability"] = reachability.analyze(py_sources, v, knowledge)
             state.vulns.sort(key=reachability.rank_key)
             reached = sum(1 for v in state.vulns if (v.get("reachability") or {}).get("reachable"))
             # Re-emit the ranked, reachability-annotated list for the UI.
@@ -135,6 +145,28 @@ class Orchestrator:
                 sources[name] = text
         return sources
 
+    def _repo_sources_js(self, sb, max_files: int = 800, max_bytes: int = 200_000) -> dict[str, str]:
+        """Pull the repo's JS/TS source text for import-level reachability.
+        Skips node_modules and build output; bounded like the Python reader."""
+        listing = sb.exec(
+            r"find . -type f \( -path '*/node_modules/*' -o -path './.git/*' "
+            r"-o -path '*/dist/*' -o -path '*/build/*' \) -prune "
+            r"-o -type f \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' "
+            r"-o -name '*.mjs' -o -name '*.cjs' \) -print"
+        ).output
+        sources: dict[str, str] = {}
+        for raw in listing.splitlines():
+            name = raw.strip().removeprefix("./")
+            if not name or len(sources) >= max_files:
+                continue
+            try:
+                text = sb.read_file(name)
+            except Exception:
+                continue
+            if len(text) <= max_bytes:
+                sources[name] = text
+        return sources
+
     # --- select the vuln to remediate (top of the reachability ranking) ---
     def _select_target(self, state: RunState) -> None:
         tv = state.vulns[0]
@@ -142,10 +174,10 @@ class Orchestrator:
         state.package = tv["package"]
         state.installed_version = tv["installed_version"]
         state.cve_id = tv["vuln_id"]
-        # Explicit config override wins; otherwise the advisory's fix version, or
-        # empty so _upgrade escalates (never an unrelated default).
-        state.patched_version = self.config.patched_version or (
-            tv["fix_versions"][0] if tv.get("fix_versions") else "")
+        # Data-driven: the advisory's fix version for THIS package, or empty so
+        # _upgrade escalates. (A global configured version can't be right across
+        # arbitrary packages/ecosystems, so it isn't used here.)
+        state.patched_version = tv["fix_versions"][0] if tv.get("fix_versions") else ""
         reach = tv.get("reachability") or {}
         # The "reachable" beat: proven reachable in this repo's own code.
         state.goals.exploit_proven = bool(reach.get("reachable"))

@@ -18,15 +18,18 @@ through an intermediate library.
 from __future__ import annotations
 
 import ast
+import re
 from typing import Any, Optional
 
 # verdict -> (rank score, confidence). Higher score = more likely exploitable.
 _VERDICTS = {
     "vulnerable-api-called": (3, "high"),
     "package-called": (2, "medium"),
+    "package-imported": (2, "medium"),   # JS/TS: import-level (coarser than Python's call-level)
     "imported-unused": (1, "low"),
     "not-imported": (0, "none"),
 }
+_REACHABLE = {"vulnerable-api-called", "package-called", "package-imported"}
 
 
 def analyze(sources: dict[str, str], vuln: dict[str, Any], knowledge) -> dict[str, Any]:
@@ -64,16 +67,40 @@ def analyze(sources: dict[str, str], vuln: dict[str, Any], knowledge) -> dict[st
                 vuln_sites.append({**site, "symbol": symbol})
 
     verdict = _grade(imported, package_sites, vuln_sites)
-    score, confidence = _VERDICTS[verdict]
     symbols = sorted({s["symbol"] for s in vuln_sites})
-    sites = (vuln_sites or package_sites)[:12]
+    return _result(verdict, (vuln_sites or package_sites), symbols)
+
+
+def analyze_js(sources: dict[str, str], vuln: dict[str, Any]) -> dict[str, Any]:
+    """Import-level reachability for an npm package in JS/TS sources.
+
+    Detects `import ... from 'pkg'`, `import 'pkg'`, `require('pkg')`, and
+    `import('pkg')` (including subpath imports like 'pkg/sub'). This is coarser
+    than the Python call-level analysis — it answers "is the vulnerable package
+    imported in this code" rather than "is the vulnerable function called."
+    """
+    pkg = vuln.get("package", "")
+    if not pkg:
+        return _result("not-imported", [])
+    spec = re.escape(pkg)
+    pat = re.compile(rf"""(?:require\(|import\(|from|import)\s*['"]{spec}(?:/[^'"]*)?['"]""")
+    sites: list[dict[str, Any]] = []
+    for path, src in sources.items():
+        for i, line in enumerate(src.splitlines(), 1):
+            if pat.search(line):
+                sites.append({"file": path, "line": i, "snippet": line.strip()[:160]})
+    return _result("package-imported" if sites else "not-imported", sites)
+
+
+def _result(verdict: str, sites: list, affected_symbols: Optional[list] = None) -> dict[str, Any]:
+    score, confidence = _VERDICTS[verdict]
     return {
         "verdict": verdict,
         "confidence": confidence,
         "score": score,
-        "reachable": verdict in ("vulnerable-api-called", "package-called"),
-        "affected_symbols": symbols,
-        "call_sites": sites,
+        "reachable": verdict in _REACHABLE,
+        "affected_symbols": affected_symbols or [],
+        "call_sites": sites[:12],
     }
 
 
