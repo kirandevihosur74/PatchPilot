@@ -39,11 +39,13 @@ class Sandbox(Protocol):
 
     def start(self) -> None: ...
     def load_repo(self, source: str) -> None: ...
-    def setup(self, requirements: str = "requirements.txt") -> ExecResult: ...
+    def setup(self, requirements: Optional[str] = "requirements.txt") -> ExecResult: ...
     def py(self) -> str: ...
     def exec(self, cmd: str, cwd: Optional[str] = None) -> ExecResult: ...
     def read_file(self, rel_path: str) -> str: ...
     def write_file(self, rel_path: str, content: str) -> None: ...
+    def serve(self, port: int, cwd_rel: str = ".") -> None: ...
+    def get_preview_url(self, port: int): ...
     def stop(self) -> None: ...
 
     def __enter__(self) -> "Sandbox": ...
@@ -88,14 +90,18 @@ class LocalSandbox:
                 ignore=shutil.ignore_patterns(".venv", "__pycache__", ".pytest_cache", ".git", "*.pyc"),
             )
 
-    def setup(self, requirements: str = "requirements.txt") -> ExecResult:
-        """Create a venv inside the sandbox and install requirements."""
+    def setup(self, requirements: Optional[str] = "requirements.txt") -> ExecResult:
+        """Create a venv inside the sandbox. If `requirements` is None (or the
+        file is absent), leave the env bare — used when we only need to install
+        tooling (pip-audit) rather than the target repo's full dependency set."""
         assert self._repo is not None, "repo not loaded"
         venv_dir = self._repo / ".sbvenv"
         self._run([sys.executable, "-m", "venv", str(venv_dir)], self._repo)
         self._py = venv_dir / "bin" / "python"
         self._run([str(self._py), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], self._repo)
-        return self.exec(f"'{self._py}' -m pip install -r {requirements}")
+        if requirements and (self._repo / requirements).exists():
+            return self.exec(f"'{self._py}' -m pip install -r {requirements}")
+        return ExecResult(0, "", "")
 
     # --- exec ---
     def exec(self, cmd: str, cwd: Optional[str] = None) -> ExecResult:
@@ -122,6 +128,13 @@ class LocalSandbox:
         p = self._abs(rel_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
+
+    # --- preview: local mode has no real sandbox web preview ---
+    def serve(self, port: int, cwd_rel: str = ".") -> None:
+        return None
+
+    def get_preview_url(self, port: int):
+        return None, None
 
     # --- internal ---
     @staticmethod

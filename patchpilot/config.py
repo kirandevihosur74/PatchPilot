@@ -48,6 +48,11 @@ class Config:
     daytona_api_key: str = field(default_factory=lambda: os.getenv("DAYTONA_API_KEY", ""))
     daytona_api_url: str = field(default_factory=lambda: os.getenv("DAYTONA_API_URL", ""))
     daytona_target: str = field(default_factory=lambda: os.getenv("DAYTONA_TARGET", ""))
+    # Preview is private by default (signed, expiring URL). Opt in to a fully
+    # public preview link only when you want it token-free.
+    daytona_public_preview: bool = field(
+        default_factory=lambda: os.getenv("PATCHPILOT_DAYTONA_PUBLIC_PREVIEW", "").lower() in ("1", "true", "yes")
+    )
 
     # --- Braintrust (evaluate) ---
     braintrust_api_key: str = field(default_factory=lambda: os.getenv("BRAINTRUST_API_KEY", ""))
@@ -58,10 +63,12 @@ class Config:
     github_repo: str = field(default_factory=lambda: os.getenv("GITHUB_REPO", ""))  # "owner/name"
     # Subdir in the repo where the target app lives (PR paths get this prefix).
     repo_subdir: str = field(default_factory=lambda: os.getenv("PATCHPILOT_REPO_SUBDIR", "").strip("/"))
+    # Owners the service token may open PRs on. Defaults to the configured repo's
+    # owner so a pasted repo_url can't aim writes at an arbitrary repository.
+    allowed_pr_owners: str = field(default_factory=lambda: os.getenv("PATCHPILOT_ALLOWED_OWNERS", ""))
 
     # --- run knobs ---
     target_path: str = field(default_factory=lambda: os.getenv("PATCHPILOT_TARGET", str(DEFAULT_TARGET)))
-    patched_version: str = field(default_factory=lambda: os.getenv("PATCHPILOT_PATCHED_VERSION", "6.0.1"))
     max_fix_iterations: int = field(default_factory=lambda: int(os.getenv("PATCHPILOT_MAX_ITERS", "3")))
     # Auto-merge the PR when the gate is green. Off -> open PR, report verdict, stop.
     auto_merge: bool = field(
@@ -92,6 +99,17 @@ class Config:
     @property
     def has_github(self) -> bool:
         return bool(self.github_token and self.github_repo)
+
+    def allowed_owners(self) -> set[str]:
+        """Lowercased owners the service token may write PRs to. Explicit env list
+        wins; otherwise the configured repo's owner. Fails closed — a list with no
+        valid entries falls back to the repo owner rather than allowing everything."""
+        owners = {o.strip().lower() for o in self.allowed_pr_owners.split(",") if o.strip()}
+        if owners:
+            return owners
+        if "/" in self.github_repo:
+            return {self.github_repo.split("/")[0].lower()}
+        return set()
 
     def summary(self) -> str:
         rows = [

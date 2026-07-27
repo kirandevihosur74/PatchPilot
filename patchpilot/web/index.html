@@ -119,6 +119,29 @@ h2{font-size:clamp(30px,4.4vw,48px);color:var(--chalk);letter-spacing:-.04em;fon
 .cfoot .hint{color:var(--ash);font-size:14px}
 .hidden{display:none}
 
+/* repo input */
+.reporow{display:flex;gap:10px;align-items:center;flex:1;min-width:280px}
+.repoinput{flex:1;min-width:200px;font-family:var(--sys);font-size:14px;color:var(--chalk);
+  background:var(--void);border:1px solid var(--iron);border-radius:3px;padding:9px 12px;letter-spacing:-.01em}
+.repoinput::placeholder{color:var(--ash)}
+.repoinput:focus{outline:none;border-color:var(--lavender)}
+
+/* vulnerabilities panel */
+.vulns{border-top:1px solid var(--iron);max-height:360px;overflow-y:auto}
+.vhead{padding:14px 24px;font-size:12px;letter-spacing:.02em;text-transform:uppercase;color:var(--ash);
+  position:sticky;top:0;background:var(--charcoal);border-bottom:1px solid var(--iron)}
+.vrow{display:grid;grid-template-columns:1fr auto;gap:8px 16px;align-items:center;
+  padding:13px 24px;border-bottom:1px solid rgba(49,49,58,.5);animation:slidein .3s ease}
+.vrow:last-child{border-bottom:none}
+.vpkg{color:var(--chalk);font-weight:500}
+.vpkg .ver{color:var(--ash);font-weight:400;margin-left:6px}
+.vid{color:var(--fog);font-size:13px;margin-top:3px}
+.vfix{font-size:13px;color:var(--pearl);text-align:right;white-space:nowrap}
+.vfix .no{color:var(--ash)}
+.badge{display:inline-block;font-size:11px;letter-spacing:.02em;border-radius:3px;padding:2px 7px;
+  border:1px solid var(--iron);color:var(--pearl)}
+.badge.reach{border-color:var(--lavender);color:var(--lavender)}
+
 footer{padding:60px 0;color:var(--ash);font-size:13px;border-top:1px solid var(--iron);text-align:center}
 
 @media (max-width:860px){
@@ -135,8 +158,8 @@ footer{padding:60px 0;color:var(--ash);font-size:13px;border-top:1px solid var(-
   <div class="brand"><span class="glyph"></span>PatchPilot</div>
   <div class="navlinks">
     <a href="#how">How it works</a>
-    <a id="ghlink" href="#" target="_blank" rel="noopener">GitHub</a>
-    <a href="#run" class="btn">Launch App</a>
+    <a href="https://github.com/kirandevihosur74/PatchPilot" target="_blank" rel="noopener">GitHub</a>
+    <a href="#run" class="btn">Scan a repo</a>
   </div>
 </div></nav>
 
@@ -197,66 +220,86 @@ footer{padding:60px 0;color:var(--ash);font-size:13px;border-top:1px solid var(-
 
 <section class="band" id="run"><div class="wrap">
   <div class="eyebrow">Live</div>
-  <h2 class="display">Watch it run.</h2>
-  <p class="lead">One click on a real vulnerable package — PyYAML 5.3.1, CVE-2020-14343. The exploit
-    runs, the patch lands, the exploit dies, and a real pull request opens for review.</p>
+  <h2 class="display">Scan a repo.</h2>
+  <p class="lead">Paste any public Python GitHub repo. PatchPilot clones it into an isolated sandbox,
+    scans its real dependencies for known CVEs, and streams every step as it goes.</p>
 
   <div class="console" style="margin-top:40px">
     <div class="chead">
-      <div class="t"><span class="live" id="live"></span><span id="status">Idle — press Run.</span></div>
-      <div class="cbtns">
-        <button class="btn" id="runlive">Run live</button>
-        <button class="btn ghost" id="rundemo">Replay demo</button>
-        <button class="btn ghost" id="reset" title="Restore the vulnerable target + clear old PRs">Reset</button>
+      <div class="reporow">
+        <input id="repo" class="repoinput" type="url" spellcheck="false" autocomplete="off"
+               placeholder="https://github.com/owner/name" />
+        <button class="btn" id="scan">Scan repo</button>
       </div>
+      <div class="t"><span class="live" id="live"></span><span id="status">Paste a public GitHub repo to scan.</span></div>
     </div>
     <div class="goals" id="goals">
-      <div class="goal" data-k="exploit_proven"><div class="gl">Exploitable</div><div class="gv"><span class="gd"></span>proven</div></div>
-      <div class="goal" data-k="cve_resolved"><div class="gl">CVE</div><div class="gv"><span class="gd"></span>resolved</div></div>
+      <div class="goal" data-k="exploit_proven"><div class="gl">Reachable</div><div class="gv"><span class="gd"></span>in your code</div></div>
+      <div class="goal" data-k="cve_resolved"><div class="gl">Resolved</div><div class="gv"><span class="gd"></span>upgraded</div></div>
       <div class="goal" data-k="tests_green"><div class="gl">Tests</div><div class="gv"><span class="gd"></span>green</div></div>
-      <div class="goal" data-k="exploit_blocked"><div class="gl">Exploit</div><div class="gv"><span class="gd"></span>blocked</div></div>
+      <div class="goal" data-k="exploit_blocked"><div class="gl">Re-scan</div><div class="gv"><span class="gd"></span>clean</div></div>
+    </div>
+    <div class="vulns hidden" id="vulnwrap">
+      <div class="vhead" id="vcount">Vulnerabilities</div>
+      <div id="vlist"></div>
     </div>
     <div class="timeline" id="timeline"></div>
-    <div class="cfoot" id="cfoot"><span class="hint">The loop streams here as it runs.</span></div>
+    <div class="cfoot" id="cfoot"><span class="hint">Steps stream here as the scan runs.</span></div>
   </div>
 </div></section>
 
 <footer><div class="wrap">PatchPilot · isolate (Daytona) → generate (Fireworks) → evaluate (Braintrust) → review (CodeRabbit)</div></footer>
 
 <script>
-const NODE_LABEL={detect:"detect",prove:"prove",upgrade:"upgrade",observe:"observe",fix:"fix",
-  verify:"verify",guard:"guard",reprove:"reprove",submit:"submit",gate:"gate",done:"done",error:"error"};
-let repoUrl="";
-fetch("/meta").then(r=>r.json()).then(m=>{repoUrl=m.repo_url||"";if(repoUrl)document.getElementById("ghlink").href=repoUrl;})
-  .catch(()=>{});
+const NODE_LABEL={ingest:"ingest",scan:"scan",analyze:"analyze",detect:"detect",prove:"prove",
+  upgrade:"upgrade",observe:"observe",fix:"fix",verify:"verify",guard:"guard",reprove:"reprove",
+  preview:"preview",submit:"submit",gate:"gate",merge:"merge",escalate:"escalate",done:"done",error:"error"};
 
+const repoInput=document.getElementById("repo");
+const btnScan=document.getElementById("scan");
 const timeline=document.getElementById("timeline");
 const statusEl=document.getElementById("status");
 const liveEl=document.getElementById("live");
 const cfoot=document.getElementById("cfoot");
-const btnLive=document.getElementById("runlive");
-const btnDemo=document.getElementById("rundemo");
-let t0=0, es=null, running=false;
+const vulnwrap=document.getElementById("vulnwrap");
+const vlist=document.getElementById("vlist");
+const vcount=document.getElementById("vcount");
+let t0=0, es=null, running=false, caps={}, previewUrl="", doneSeen=false;
 
-function emphasize(msg){
-  return msg
-    .replace(/(ACCEPTED[^.,]*)/g,"<b>$1</b>")
-    .replace(/(BLOCKED[^.,]*)/g,"<b>$1</b>")
-    .replace(/(RCE)/g,"<b>$1</b>");
-}
+fetch("/meta").then(r=>r.json()).then(m=>{caps=m||{};
+  if(!caps.has_daytona) statusEl.textContent="Heads up: no Daytona key — scans run in a local sandbox.";
+}).catch(()=>{});
+
+function escapeHtml(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 function addRow(evt){
   const el=document.createElement("div");
-  const hot=/ACCEPTED|RCE/.test(evt.message);
-  const cool=/BLOCKED|dead|green|preserved/.test(evt.message);
-  el.className="row"+(hot?" hot":cool?" cool":"");
+  el.className="row";
   const ts=((evt.t!=null?evt.t:(Date.now()-t0)/1000)).toFixed(1)+"s";
   el.innerHTML=`<span class="ts mono">${ts}</span>`
     +`<span class="nd">${NODE_LABEL[evt.node]||evt.node}</span>`
-    +`<span class="msg">${emphasize(escapeHtml(evt.message))}</span>`;
+    +`<span class="msg">${escapeHtml(evt.message)}</span>`;
   timeline.appendChild(el);
   timeline.scrollTop=timeline.scrollHeight;
 }
-function escapeHtml(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function renderVulns(vulns){
+  if(!vulns)return;
+  vulnwrap.classList.remove("hidden");
+  vcount.textContent=vulns.length+" vulnerable "+(vulns.length===1?"dependency":"dependencies");
+  vlist.innerHTML="";
+  vulns.forEach(v=>{
+    const row=document.createElement("div");row.className="vrow";
+    const fix=(v.fix_versions&&v.fix_versions.length)
+      ?`fix → ${escapeHtml(v.fix_versions[0])}`:`<span class="no">no fix listed</span>`;
+    const reach=v.reachability&&v.reachability.verdict
+      ?`<span class="badge reach">${escapeHtml(v.reachability.verdict)}</span> `:"";
+    const eco=v.ecosystem?`<span class="badge">${escapeHtml(v.ecosystem)}</span> `:"";
+    row.innerHTML=
+      `<div><div class="vpkg">${escapeHtml(v.package)}<span class="ver">${escapeHtml(v.installed_version)}</span></div>`
+      +`<div class="vid">${eco}${reach}${escapeHtml(v.vuln_id)}${v.severity?(" · "+escapeHtml(String(v.severity))):""}</div></div>`
+      +`<div class="vfix">${fix}</div>`;
+    vlist.appendChild(row);
+  });
+}
 function updateGoals(g){
   if(!g)return;
   document.querySelectorAll(".goal").forEach(el=>{
@@ -265,58 +308,60 @@ function updateGoals(g){
     el.classList.toggle("fail",v===false);
   });
 }
-function finish(evt){
-  running=false;liveEl.classList.remove("on");
-  btnLive.disabled=false;btnDemo.disabled=false;
-  const escalated=evt&&evt.escalated;
-  statusEl.textContent=escalated?"Gate held — CodeRabbit requested changes.":"Done — proven exploitable, then proven dead.";
-  const url=(evt&&evt.pr_url)||repoUrl;
-  cfoot.innerHTML="";
-  if(url){
-    const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";
-    a.className="btn";a.textContent=(evt&&evt.pr_url)?"View the PR + CodeRabbit review":"Open the repo on GitHub";
-    cfoot.appendChild(a);
-  }
-  const note=document.createElement("span");note.className="hint";
-  note.textContent=escalated?" The independent reviewer blocked an incomplete patch — exactly the point.":" ";
-  cfoot.appendChild(note);
+function mkbtn(url,label,cls){
+  const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";
+  a.className=cls;a.textContent=label;return a;
 }
-function launch(mode){
+function showPreview(){
+  if(!previewUrl||document.getElementById("previewbtn"))return;
+  const a=mkbtn(previewUrl,"Open sandbox preview","btn");a.id="previewbtn";
+  cfoot.insertBefore(a,cfoot.firstChild);
+}
+function finish(evt,aborted){
+  running=false;liveEl.classList.remove("on");
+  btnScan.disabled=false;repoInput.disabled=false;
+  if(evt&&evt.vulns)renderVulns(evt.vulns);
+  if(evt&&evt.preview_url)previewUrl=evt.preview_url;
+  cfoot.innerHTML="";
+  if(previewUrl){const a=mkbtn(previewUrl,"Open sandbox preview","btn");a.id="previewbtn";cfoot.appendChild(a);}
+  if(evt&&evt.pr_url)cfoot.appendChild(mkbtn(evt.pr_url,"View the PR","btn ghost"));
+  const msg=aborted?"Connection ended before the scan finished.":((evt&&evt.message)||"Scan complete.");
+  const note=document.createElement("span");note.className="hint";note.textContent=msg;
+  cfoot.appendChild(note);
+  statusEl.textContent=msg;
+}
+function scanRepo(){
   if(running)return;
-  running=true;t0=Date.now();
-  timeline.innerHTML="";cfoot.innerHTML='<span class="hint">Starting…</span>';
-  updateGoals({});
+  const repo_url=repoInput.value.trim();
+  if(!repo_url){statusEl.textContent="Enter a GitHub repo URL first.";repoInput.focus();return;}
+  running=true;t0=Date.now();previewUrl="";doneSeen=false;
+  timeline.innerHTML="";vlist.innerHTML="";vulnwrap.classList.add("hidden");
+  cfoot.innerHTML='<span class="hint">Starting…</span>';
   document.querySelectorAll(".goal").forEach(el=>el.classList.remove("done","fail"));
-  btnLive.disabled=true;btnDemo.disabled=true;liveEl.classList.add("on");
-  statusEl.textContent=mode==="live"?"Live run — creating sandboxes…":"Replaying a recorded run…";
-  fetch("/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode})})
-    .then(r=>r.json()).then(({token})=>{
+  btnScan.disabled=true;repoInput.disabled=true;liveEl.classList.add("on");
+  statusEl.textContent="Cloning into an isolated sandbox…";
+  fetch("/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({repo_url})})
+    .then(async r=>{
+      if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.error||("HTTP "+r.status));}
+      return r.json();
+    }).then(({token})=>{
       es=new EventSource(`/stream/${token}`);
       es.onmessage=e=>{
         const evt=JSON.parse(e.data);
         addRow(evt);updateGoals(evt.goals);
+        if(evt.vulns)renderVulns(evt.vulns);
+        if(evt.preview_url){previewUrl=evt.preview_url;showPreview();}
         statusEl.textContent=evt.node+" · "+evt.message;
-        if(evt.done)finish(evt);
+        if(evt.done){doneSeen=true;finish(evt);}
       };
-      es.addEventListener("end",()=>{es.close();if(running)finish(null);});
-      es.onerror=()=>{es.close();if(running){statusEl.textContent="Stream ended.";finish(null);}};
-    }).catch(err=>{running=false;liveEl.classList.remove("on");btnLive.disabled=false;btnDemo.disabled=false;
-      statusEl.textContent="Could not start: "+err;});
+      es.addEventListener("end",()=>{es.close();if(running)finish(null,!doneSeen);});
+      es.onerror=()=>{es.close();if(running)finish(null,!doneSeen);};
+    }).catch(err=>{running=false;liveEl.classList.remove("on");
+      btnScan.disabled=false;repoInput.disabled=false;
+      statusEl.textContent="Could not start: "+err.message;});
 }
-btnLive.addEventListener("click",()=>launch("live"));
-btnDemo.addEventListener("click",()=>launch("demo"));
-
-const btnReset=document.getElementById("reset");
-btnReset.addEventListener("click",()=>{
-  if(running)return;
-  btnReset.disabled=btnLive.disabled=btnDemo.disabled=true;
-  statusEl.textContent="Resetting — restoring vulnerable target, clearing old PRs…";
-  fetch("/reset",{method:"POST"}).then(r=>r.json()).then(d=>{
-    statusEl.textContent=d.ok?"Reset ✓ — target vulnerable, ready for a live run.":"Reset failed (check server log).";
-    if(!d.ok&&d.output)console.warn(d.output);
-  }).catch(e=>{statusEl.textContent="Reset error: "+e;})
-   .finally(()=>{btnReset.disabled=btnLive.disabled=btnDemo.disabled=false;});
-});
+btnScan.addEventListener("click",scanRepo);
+repoInput.addEventListener("keydown",e=>{if(e.key==="Enter")scanRepo();});
 </script>
 </body>
 </html>
