@@ -9,6 +9,7 @@ Python directly.
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -34,11 +35,12 @@ class DaytonaSandbox:
         if self._config.daytona_target:
             cfg_kwargs["target"] = self._config.daytona_target
         self._daytona = Daytona(DaytonaConfig(**cfg_kwargs))
-        # public=True so a preview link opens in the browser without a token.
-        # Auto-stop/delete so a sandbox we leave running for its preview is reaped.
+        # Private by default (preview uses a signed, expiring URL); opt in to a
+        # token-free public link via config. Auto-stop/delete reaps a sandbox we
+        # leave running to serve its preview.
         self._sandbox = self._daytona.create(
             CreateSandboxFromSnapshotParams(
-                language="python", public=True,
+                language="python", public=self._config.daytona_public_preview,
                 auto_stop_interval=15, auto_delete_interval=60,
             ),
             timeout=180,
@@ -78,9 +80,14 @@ class DaytonaSandbox:
             self._sandbox.fs.upload_file(str(path), f"{dest_root}/{rel}")
 
     def setup(self, requirements: Optional[str] = "requirements.txt") -> ExecResult:
+        assert self._sandbox is not None, "sandbox not started"
         if not requirements:
             return ExecResult(0, "", "")
-        return self.exec(f"python -m pip install -r {requirements}")
+        # Match LocalSandbox: only install if the file is actually present.
+        check = self.exec(f"test -f {shlex.quote(requirements)} && echo __OK__")
+        if "__OK__" not in check.output:
+            return ExecResult(0, "", "")
+        return self.exec(f"python -m pip install -r {shlex.quote(requirements)}")
 
     def py(self) -> str:
         return "python"
@@ -122,10 +129,16 @@ class DaytonaSandbox:
         )
 
     def get_preview_url(self, port: int):
-        """Return (url, token) for a port served inside the sandbox, or (None, None)."""
+        """Return (url, token) for a port served inside the sandbox, or (None, None).
+
+        Private sandboxes (the default) get a signed, expiring URL that opens in
+        the browser without a header; a public sandbox gets the plain link."""
         assert self._sandbox is not None, "sandbox not started"
         try:
-            info = self._sandbox.get_preview_link(port)
-            return getattr(info, "url", None), getattr(info, "token", None)
+            if self._config.daytona_public_preview:
+                info = self._sandbox.get_preview_link(port)
+                return getattr(info, "url", None), getattr(info, "token", None)
+            info = self._sandbox.create_signed_preview_url(port, expires_in_seconds=3600)
+            return getattr(info, "url", None), ""
         except Exception:
             return None, None

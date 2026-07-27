@@ -72,7 +72,9 @@ async def start_run(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    repo_url = (body or {}).get("repo_url", "").strip()
+    if not isinstance(body, dict):  # JSON allows lists/scalars — those have no .get
+        body = {}
+    repo_url = str(body.get("repo_url", "")).strip()
     if not _valid_repo_url(repo_url):
         return JSONResponse(
             {"error": "Provide a GitHub repo URL, e.g. https://github.com/owner/name"},

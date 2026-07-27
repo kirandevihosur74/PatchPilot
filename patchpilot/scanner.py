@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from typing import Any, Callable, Optional
 
 # Manifests we know how to reason about, in rough priority order.
@@ -45,7 +46,7 @@ def discover_manifests(sb) -> list[str]:
     out = sb.exec(cmd).output
     found = []
     for line in out.splitlines():
-        name = line.strip().lstrip("./")
+        name = line.strip().removeprefix("./")
         if name:
             found.append(name)
     return sorted(set(found))
@@ -71,7 +72,7 @@ def scan(sb, manifests: Optional[list[str]] = None, log: Log = None) -> list[dic
         # Audit pinned requirements directly — no full install needed, most reliable.
         for req in req_files:
             _emit(log, f"scanning {req}")
-            res = sb.exec(f"{sb.py()} -m pip_audit -r {req} -f json --progress-spinner off")
+            res = sb.exec(f"{sb.py()} -m pip_audit -r {shlex.quote(req)} -f json --progress-spinner off")
             vulns.extend(_parse_pip_audit(res.output, manifest=req))
     elif any(m in (PYPROJECT, POETRY_LOCK, PIPFILE, PIPFILE_LOCK, SETUP_PY, SETUP_CFG) for m in manifests):
         # No plain requirements: install the project, then audit the environment.

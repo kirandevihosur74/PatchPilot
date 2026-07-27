@@ -37,7 +37,6 @@ class Orchestrator:
             target_path=source,
             repo_url=self.repo_url,
             max_iterations=cfg.max_fix_iterations,
-            patched_version=cfg.patched_version,
         )
         if self.on_event:
             state.on_event = self.on_event
@@ -125,7 +124,7 @@ class Orchestrator:
         ).output
         sources: dict[str, str] = {}
         for raw in listing.splitlines():
-            name = raw.strip().lstrip("./")
+            name = raw.strip().removeprefix("./")
             if not name or len(sources) >= max_files:
                 continue
             try:
@@ -143,8 +142,10 @@ class Orchestrator:
         state.package = tv["package"]
         state.installed_version = tv["installed_version"]
         state.cve_id = tv["vuln_id"]
-        if tv.get("fix_versions"):
-            state.patched_version = tv["fix_versions"][0]
+        # Explicit config override wins; otherwise the advisory's fix version, or
+        # empty so _upgrade escalates (never an unrelated default).
+        state.patched_version = self.config.patched_version or (
+            tv["fix_versions"][0] if tv.get("fix_versions") else "")
         reach = tv.get("reachability") or {}
         # The "reachable" beat: proven reachable in this repo's own code.
         state.goals.exploit_proven = bool(reach.get("reachable"))
@@ -228,11 +229,11 @@ class Orchestrator:
             pkg, target = state.package, state.patched_version
             # Prefer the advisory's exact fix; if it won't build/install on this
             # Python (older pins often don't), fall back to the newest release >= fix.
-            r = sb.exec(f"{sb.py()} -m pip install '{pkg}=={target}'")
+            r = sb.exec(f"{sb.py()} -m pip install {shlex.quote(f'{pkg}=={target}')}")
             if r.exit_code != 0:
                 state.log(Node.UPGRADE,
                           f"{pkg}=={target} won't install here — moving to the newest release ≥ {target}")
-                r2 = sb.exec(f"{sb.py()} -m pip install --upgrade '{pkg}>={target}'")
+                r2 = sb.exec(f"{sb.py()} -m pip install --upgrade {shlex.quote(f'{pkg}>={target}')}")
                 if r2.exit_code != 0:
                     self._escalate(state, f"could not install a fixed {pkg} (>= {target}) in this environment")
                     span.log(output={"error": "install failed"}, metadata={"node": "upgrade"})
@@ -255,7 +256,7 @@ class Orchestrator:
             # Install the repo's full deps (against the bumped pin) + pytest so the suite can run.
             for m in state.manifests:
                 if m.lower().endswith(".txt"):
-                    sb.exec(f"{sb.py()} -m pip install -r {m}")
+                    sb.exec(f"{sb.py()} -m pip install -r {shlex.quote(m)}")
             sb.exec(f"{sb.py()} -m pip install --quiet pytest")
             for c in changed:
                 if c not in state.changed_paths:
@@ -266,7 +267,7 @@ class Orchestrator:
 
     @staticmethod
     def _installed_version(sb, pkg: str) -> str:
-        out = sb.exec(f"{sb.py()} -m pip show {pkg}").output
+        out = sb.exec(f"{sb.py()} -m pip show {shlex.quote(pkg)}").output
         m = re.search(r"(?im)^Version:\s*(.+)$", out)
         return m.group(1).strip() if m else ""
 
@@ -387,6 +388,15 @@ class Orchestrator:
         from .vcs import GitHubClient
 
         repo = self._repo_slug(state.repo_url) or self.config.github_repo
+        # The service token can write; only let it target allowed owners so a
+        # pasted repo_url can't aim a PR (or merge) at an arbitrary repository.
+        owner = repo.split("/")[0].lower() if "/" in repo else ""
+        allowed = self.config.allowed_owners()
+        if allowed and owner not in allowed:
+            self._escalate(state,
+                           f"PR target {repo} is outside the allowed owners "
+                           f"({', '.join(sorted(allowed))}) — writes are restricted to protect the token")
+            return
         files: dict[str, str] = {}
         for p in state.changed_paths:
             try:
