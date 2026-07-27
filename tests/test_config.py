@@ -17,3 +17,9 @@ def test_allowed_owners_explicit_list_wins():
 def test_allowed_owners_empty_when_unconfigured():
     cfg = Config(github_repo="", allowed_pr_owners="")
     assert cfg.allowed_owners() == set()
+
+
+def test_allowed_owners_fails_closed_on_garbage_list():
+    # A list with no valid entries must NOT disable the allowlist.
+    cfg = Config(github_repo="acme/app", allowed_pr_owners=" , ")
+    assert cfg.allowed_owners() == {"acme"}

@@ -2,14 +2,15 @@
 
 import pytest
 
-try:
-    from starlette.testclient import TestClient
-    from patchpilot.api import app
-    _client = TestClient(app)
-except Exception:  # pragma: no cover - deps not present in this env
-    _client = None
+# Skip cleanly only when the optional web deps are absent; a real failure in the
+# app import or client setup should fail the test, not silently skip it.
+pytest.importorskip("starlette")
+pytest.importorskip("fastapi")
 
-pytestmark = pytest.mark.skipif(_client is None, reason="starlette/fastapi not installed")
+from starlette.testclient import TestClient
+from patchpilot.api import app
+
+_client = TestClient(app)
 
 
 def test_non_dict_body_is_rejected_not_crashed():

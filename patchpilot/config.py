@@ -104,9 +104,11 @@ class Config:
 
     def allowed_owners(self) -> set[str]:
         """Lowercased owners the service token may write PRs to. Explicit env list
-        wins; otherwise the configured repo's owner."""
-        if self.allowed_pr_owners:
-            return {o.strip().lower() for o in self.allowed_pr_owners.split(",") if o.strip()}
+        wins; otherwise the configured repo's owner. Fails closed — a list with no
+        valid entries falls back to the repo owner rather than allowing everything."""
+        owners = {o.strip().lower() for o in self.allowed_pr_owners.split(",") if o.strip()}
+        if owners:
+            return owners
         if "/" in self.github_repo:
             return {self.github_repo.split("/")[0].lower()}
         return set()
